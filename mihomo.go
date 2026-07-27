@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -45,27 +46,48 @@ func apiMihomoInbounds(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
-	var result []mihomoInbound
-	var pending *mihomoInbound
-	for _, line := range strings.Split(out, "\n") {
-		link := vlessLinkRE.FindString(line)
-		if link != "" && pending != nil {
-			pending.Link = link
-			result = append(result, *pending)
-			pending = nil
+	result, err := parseMihomoBindings("/etc/mihomo/fanout-bindings.db", out)
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 200, result)
+}
+
+func parseMihomoBindings(path, mhOutput string) ([]mihomoInbound, error) {
+	links := map[string]string{}
+	for _, link := range vlessLinkRE.FindAllString(mhOutput, -1) {
+		parsed, err := url.Parse(link)
+		if err != nil || parsed.Fragment == "" {
 			continue
 		}
-		fields := strings.Fields(line)
+		name, err := url.PathUnescape(parsed.Fragment)
+		if err == nil {
+			links[name] = link
+		}
+	}
+	blob, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return []mihomoInbound{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("读取 Mihomo fanout 绑定失败: %v", err)
+	}
+	result := []mihomoInbound{}
+	for _, line := range strings.Split(string(blob), "\n") {
+		fields := strings.Split(line, "|")
 		if len(fields) < 4 {
 			continue
 		}
 		port := 0
-		fmt.Sscanf(fields[2], "SOCKS=%d", &port)
-		if port > 0 {
-			pending = &mihomoInbound{Name: strings.TrimSpace(fields[0]), Node: strings.TrimPrefix(fields[1], "复用节点="), Port: port}
+		if _, err := fmt.Sscanf(fields[3], "%d", &port); err != nil || port < 1 {
+			continue
 		}
+		result = append(result, mihomoInbound{
+			Name: fields[0], Node: fields[1], UUID: fields[2], Port: port, Link: links[fields[0]],
+		})
 	}
-	writeJSON(w, 200, result)
+	return result, nil
 }
 
 func apiMihomoAdd(w http.ResponseWriter, r *http.Request) {

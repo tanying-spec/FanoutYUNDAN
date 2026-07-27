@@ -331,10 +331,12 @@ async function loadMihomo(){
       + '<td class="port">' + i.port + '</td><td>'
       + '<button data-copy="' + esc(i.link) + '">复制链接</button> '
       + '<button data-delete-mihomo="' + esc(i.name) + '">删除</button></td></tr>').join('');
+    return mihomoInbounds;
   } catch(e) {
     $('#xui').textContent = 'Mihomo: ' + e.message;
     $('#iempty').textContent = 'Mihomo 未接入或读取失败: ' + e.message;
     $('#iempty').style.display = '';
+    return [];
   }
 }
 
@@ -352,8 +354,15 @@ $('#createMihomo').onclick = async e => {
   e.target.disabled = true;
   e.target.textContent = '创建中';
   try {
-    for(const t of up) await api('/api/mihomo/add?name=' + encodeURIComponent(nextName(t.node.country_code)) + '&port=' + t.port, {method:'POST'});
-    await loadMihomo();
+    const created = [];
+    for(const t of up){
+      const name = nextName(t.node.country_code);
+      await api('/api/mihomo/add?name=' + encodeURIComponent(name) + '&port=' + t.port, {method:'POST'});
+      created.push(name);
+    }
+    const refreshed = await loadMihomo();
+    const visible = new Set(refreshed.map(i => i.name));
+    if(created.some(name => !visible.has(name))) throw new Error('创建命令已执行，但新入站未能从 Mihomo 绑定列表读回');
     alert('已创建 ' + up.length + ' 个 Mihomo 入站');
   } catch(err) { alert('创建失败: ' + err.message); }
   e.target.disabled = false;
