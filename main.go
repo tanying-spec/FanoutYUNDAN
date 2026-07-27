@@ -73,6 +73,7 @@ func main() {
 	}
 
 	go mgr.WatchHealth()
+	go mgr.WatchMihomo()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -91,16 +92,11 @@ func main() {
 	mux.HandleFunc("/api/switch", apiSwitch(mgr))
 	mux.HandleFunc("/api/stop", apiStop(mgr))
 	mux.HandleFunc("/api/refresh", apiRefresh(mgr))
-	mux.HandleFunc("/api/xui", apiXUIStatus)
-	mux.HandleFunc("/api/xui/inbounds", apiXUIInbounds(mgr))
-	mux.HandleFunc("/api/xui/bind", apiXUIBind(mgr))
-	mux.HandleFunc("/api/xui/clone", apiXUIClone(mgr))
-	mux.HandleFunc("/api/xui/detail", apiXUIDetail)
-	mux.HandleFunc("/api/xui/links", apiXUILinks)
 	mux.HandleFunc("/api/mihomo/status", apiMihomoStatus(mgr))
 	mux.HandleFunc("/api/mihomo/templates", apiMihomoTemplates(mgr))
 	mux.HandleFunc("/api/mihomo/inbounds", apiMihomoInbounds(mgr))
 	mux.HandleFunc("/api/mihomo/add", apiMihomoAdd(mgr))
+	mux.HandleFunc("/api/mihomo/bind", apiMihomoBind(mgr))
 	mux.HandleFunc("/api/mihomo/delete", apiMihomoDelete(mgr))
 
 	auth, created, err := NewAuth(*workDir)

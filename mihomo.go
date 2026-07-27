@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -540,8 +541,56 @@ func apiMihomoAdd(m *Manager) http.HandlerFunc {
 			writeJSON(w, 409, map[string]string{"error": "没有可用的 Mihomo VLESS 入站模板"})
 			return
 		}
-		if !selected.Ready {
-			writeJSON(w, 409, map[string]string{"error": selected.Reason})
+		if value := strings.TrimSpace(r.URL.Query().Get("mode")); value != "" {
+			if value != "direct" && value != "cdn" && value != "argo" && value != "reality" {
+				writeJSON(w, 400, map[string]string{"error": "入口模式无效"})
+				return
+			}
+			selected.Mode = value
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("public_address")); value != "" {
+			if strings.ContainsAny(value, "/?#") {
+				writeJSON(w, 400, map[string]string{"error": "公网入口只能填写 IP 或域名"})
+				return
+			}
+			selected.PublicAddress = value
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("public_port")); value != "" {
+			port, err := strconv.Atoi(value)
+			if err != nil || port < 1 || port > 65535 {
+				writeJSON(w, 400, map[string]string{"error": "公网入口端口无效"})
+				return
+			}
+			selected.PublicPort = port
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("host")); value != "" {
+			selected.Host = value
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("sni")); value != "" {
+			selected.SNI = value
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("path")); value != "" {
+			if !strings.HasPrefix(value, "/") {
+				value = "/" + value
+			}
+			selected.Path = value
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("public_key")); value != "" {
+			selected.PublicKey = value
+		}
+		if value := strings.TrimSpace(r.URL.Query().Get("short_id")); value != "" {
+			selected.ShortID = value
+		}
+		if selected.PublicAddress == "" || selected.PublicPort < 1 {
+			writeJSON(w, 400, map[string]string{"error": "缺少公网入口地址或端口"})
+			return
+		}
+		if (selected.Mode == "cdn" || selected.Mode == "argo") && (selected.Host == "" || selected.SNI == "") {
+			writeJSON(w, 400, map[string]string{"error": "CDN/Argo 模式必须填写 Host 和 SNI"})
+			return
+		}
+		if selected.Mode == "reality" && (selected.SNI == "" || selected.PublicKey == "" || selected.ShortID == "") {
+			writeJSON(w, 400, map[string]string{"error": "Reality 模式必须填写 SNI、公钥和 Short ID"})
 			return
 		}
 		state, err := loadMihomoState(m.mihomoStatePath())
@@ -577,6 +626,106 @@ func apiMihomoAdd(m *Manager) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, 200, binding)
+	}
+}
+
+func apiMihomoBind(m *Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		m.mihomoMu.Lock()
+		defer m.mihomoMu.Unlock()
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		port, err := strconv.Atoi(r.URL.Query().Get("port"))
+		if name == "" || err != nil || port < 1 || port > 65535 {
+			writeJSON(w, 400, map[string]string{"error": "入站名称或 SOCKS 端口无效"})
+			return
+		}
+		allowed := false
+		for _, tunnel := range m.Tunnels() {
+			if tunnel.Status == "up" && tunnel.Port == port {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			writeJSON(w, 409, map[string]string{"error": "目标 SOCKS 端口不属于已连通的 Fanout 出口"})
+			return
+		}
+		state, err := loadMihomoState(m.mihomoStatePath())
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		index := -1
+		for i := range state.Bindings {
+			if state.Bindings[i].Name == name {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			writeJSON(w, 404, map[string]string{"error": "未找到由 FanoutYUNDAN 管理的 Mihomo 入站"})
+			return
+		}
+		path, err := findMihomoConfig()
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		config, previous, err := loadMihomoConfig(path)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		state.Bindings[index].SocksPort = port
+		if err := addBindingToConfig(config, state.Bindings[index]); err != nil {
+			writeJSON(w, 409, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := applyMihomoConfig(path, config, previous); err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := saveMihomoState(m.mihomoStatePath(), state); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]string{"ok": "已切换 Mihomo 入站出口"})
+	}
+}
+
+func (m *Manager) reconcileMihomo() error {
+	m.mihomoMu.Lock()
+	defer m.mihomoMu.Unlock()
+	state, err := loadMihomoState(m.mihomoStatePath())
+	if err != nil || len(state.Bindings) == 0 {
+		return err
+	}
+	path, err := findMihomoConfig()
+	if err != nil {
+		return err
+	}
+	config, previous, err := loadMihomoConfig(path)
+	if err != nil {
+		return err
+	}
+	before, _ := yaml.Marshal(config)
+	for _, binding := range state.Bindings {
+		if err := addBindingToConfig(config, binding); err != nil {
+			return err
+		}
+	}
+	after, _ := yaml.Marshal(config)
+	if bytes.Equal(before, after) {
+		return nil
+	}
+	return applyMihomoConfig(path, config, previous)
+}
+
+func (m *Manager) WatchMihomo() {
+	for range time.Tick(time.Minute) {
+		if err := m.reconcileMihomo(); err != nil {
+			fmt.Printf("FanoutYUNDAN Mihomo 配置同步失败: %v\n", err)
+		}
 	}
 }
 

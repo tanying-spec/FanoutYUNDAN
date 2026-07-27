@@ -294,22 +294,12 @@ func (m *Manager) nodeInUse(host string, exceptSlot int) bool {
 	return false
 }
 
-// rebind 在隧道换节点后，把原先指向旧节点的 3x-ui 入站改绑到新节点。
-// 面板不可用时静默跳过，健康检查本身不应因此失败。
+// rebind keeps native Mihomo bindings present after an exit reconnect.
 func (m *Manager) rebind(oldHost string, t *Tunnel) error {
-	x, err := DetectXUI()
-	if err != nil {
-		return nil
-	}
-	return x.Rebind(oldHost, t, m.Tunnels())
+	return m.reconcileMihomo()
 }
 
-// resync 在节点没换但重连过之后，把 3x-ui 的出站配置刷新一遍。
-// 面板不可用时静默跳过，健康检查本身不应因此失败。
+// resync restores native Mihomo bindings if another tool rewrote the config.
 func (m *Manager) resync(t *Tunnel) error {
-	x, err := DetectXUI()
-	if err != nil {
-		return nil
-	}
-	return x.ResyncOutbound(t, m.Tunnels())
+	return m.reconcileMihomo()
 }

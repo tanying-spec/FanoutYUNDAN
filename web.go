@@ -61,6 +61,12 @@ tr:hover td{background:#1a1f27}
 input[type=search]{font:inherit;background:#0e1116;border:1px solid var(--line);
   color:var(--text);border-radius:4px;padding:4px 8px;width:150px}
 input[type=search]:focus{outline:none;border-color:var(--accent)}
+.form{display:grid;grid-template-columns:130px minmax(0,1fr);gap:10px 14px;padding:14px}
+.form label{color:var(--dim);align-self:center}
+.form input,.form select{font:inherit;background:#0e1116;border:1px solid var(--line);
+  color:var(--text);border-radius:4px;padding:6px 8px;width:100%;max-width:none}
+.form input:focus,.form select:focus{outline:none;border-color:var(--accent)}
+.actions{display:flex;justify-content:flex-end;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
 .err{color:var(--bad);font-size:11px;max-width:260px;overflow:hidden;
   text-overflow:ellipsis;display:inline-block;vertical-align:bottom}
 .links{display:flex;gap:14px;margin-right:4px}
@@ -180,6 +186,31 @@ a.lnk:hover{color:var(--accent);border-color:var(--accent)}
   </div>
 </div>
 
+<div class="modal" id="mihomomodal">
+  <div class="sheet" style="width:min(620px,92vw)">
+    <div class="head">
+      <h2>创建 Mihomo 入站</h2>
+      <span class="count" id="mselected"></span>
+      <span class="spacer"></span>
+      <button id="closemihomo">关闭</button>
+    </div>
+    <div class="scroll">
+      <div class="form">
+        <label for="mtemplate">入站模板</label><select id="mtemplate"></select>
+        <label for="mmode">入口模式</label><select id="mmode"><option value="direct">直连 WS</option><option value="cdn">Cloudflare CDN WS-TLS</option><option value="argo">Cloudflare Argo WS-TLS</option><option value="reality">VLESS Reality</option></select>
+        <label for="maddress">公网地址</label><input id="maddress" type="text" autocomplete="off">
+        <label for="mport">公网端口</label><input id="mport" type="number" min="1" max="65535">
+        <label for="mhost">WS Host</label><input id="mhost" type="text" autocomplete="off">
+        <label for="msni">SNI</label><input id="msni" type="text" autocomplete="off">
+        <label for="mpath">WS Path</label><input id="mpath" type="text" autocomplete="off">
+        <label for="mpublickey">Reality 公钥</label><input id="mpublickey" type="text" autocomplete="off">
+        <label for="mshortid">Reality Short ID</label><input id="mshortid" type="text" autocomplete="off">
+      </div>
+    </div>
+    <div class="actions"><button class="primary" id="confirmMihomo">创建</button></div>
+  </div>
+</div>
+
 <div class="modal" id="detailmodal">
   <div class="sheet">
     <div class="head">
@@ -193,7 +224,7 @@ a.lnk:hover{color:var(--accent);border-color:var(--accent)}
 
 <script>
 const $ = s => document.querySelector(s);
-let nodes = [], tunnels = [], maxSlots = 1, nodeError = '';
+let nodes = [], tunnels = [], maxSlots = 1, nodeError = '', mihomoTemplates = [];
 const picked = new Set();
 let tplId = 0;
 const ipicked = new Set();
@@ -326,11 +357,14 @@ async function loadMihomo(){
     $('#xui').textContent = 'Mihomo 入站 ' + mihomoInbounds.length + ' 个';
     $('#icount').textContent = mihomoInbounds.length ? mihomoInbounds.length + ' 个' : '';
     $('#iempty').style.display = mihomoInbounds.length ? 'none' : '';
-    $('#ibody').innerHTML = mihomoInbounds.map(i => '<tr>'
-      + '<td>' + esc(i.name) + '</td><td class="dim">VLESS-WS</td>'
-      + '<td class="port">' + i.port + '</td><td>'
+    $('#ibody').innerHTML = mihomoInbounds.map(i => {
+      const options = tunnels.filter(t => t.status === 'up').map(t => '<option value="' + t.port + '"' + (t.port === i.port ? ' selected' : '') + '>' + esc(t.node.country_code) + ' · ' + t.port + ' · ' + esc(t.exit_ip || t.node.hostname) + '</option>').join('');
+      return '<tr>'
+      + '<td>' + esc(i.name) + '</td><td class="dim">' + esc((i.protocol || 'vless-ws') + ' / ' + (i.mode || 'direct')) + '</td>'
+      + '<td><select data-bind-mihomo="' + esc(i.name) + '">' + options + '</select></td><td>'
       + '<button data-copy="' + esc(i.link) + '">复制链接</button> '
-      + '<button data-delete-mihomo="' + esc(i.name) + '">删除</button></td></tr>').join('');
+      + '<button data-delete-mihomo="' + esc(i.name) + '">删除</button></td></tr>';
+    }).join('');
     return mihomoInbounds;
   } catch(e) {
     $('#xui').textContent = 'Mihomo: ' + e.message;
@@ -340,9 +374,44 @@ async function loadMihomo(){
   }
 }
 
-$('#createMihomo').onclick = async e => {
+async function loadMihomoTemplates(){
+  mihomoTemplates = await api('/api/mihomo/templates') || [];
+  $('#mtemplate').innerHTML = mihomoTemplates.map(t => '<option value="' + esc(t.name) + '"' + (t.ready ? '' : ' disabled') + '>' + esc(t.name + ' · ' + t.mode + (t.ready ? '' : ' · ' + t.reason)) + '</option>').join('');
+  fillMihomoTemplate();
+}
+
+function fillMihomoTemplate(){
+  const t = mihomoTemplates.find(x => x.name === $('#mtemplate').value) || mihomoTemplates.find(x => x.ready);
+  if(!t) return;
+  $('#mtemplate').value = t.name;
+  $('#mmode').value = t.mode || 'direct';
+  $('#maddress').value = t.public_address || '';
+  $('#mport').value = t.public_port || '';
+  $('#mhost').value = t.host || '';
+  $('#msni').value = t.sni || '';
+  $('#mpath').value = t.path || '';
+  $('#mpublickey').value = t.public_key || '';
+  $('#mshortid').value = t.short_id || '';
+}
+
+const mihomoModal = $('#mihomomodal');
+$('#mtemplate').onchange = fillMihomoTemplate;
+$('#closemihomo').onclick = () => mihomoModal.classList.remove('open');
+mihomoModal.onclick = e => { if(e.target === mihomoModal) mihomoModal.classList.remove('open'); };
+
+$('#createMihomo').onclick = async () => {
   const up = tunnels.filter(t => t.status === 'up' && picked.has(t.slot));
   if(!up.length){ alert('先在左侧勾选已连接的出口'); return; }
+  try { await loadMihomoTemplates(); }
+  catch(err){ alert('读取 Mihomo 入站模板失败: ' + err.message); return; }
+  if(!mihomoTemplates.some(t => t.ready)){ alert('没有可用的 Mihomo VLESS 入站模板'); return; }
+  $('#mselected').textContent = up.length + ' 个出口';
+  mihomoModal.classList.add('open');
+};
+
+$('#confirmMihomo').onclick = async e => {
+  const up = tunnels.filter(t => t.status === 'up' && picked.has(t.slot));
+  if(!up.length){ mihomoModal.classList.remove('open'); return; }
   const used = new Set(mihomoInbounds.map(i => i.name));
   const nextName = country => {
     const base = (country || 'Exit') + '-Fanout';
@@ -357,17 +426,27 @@ $('#createMihomo').onclick = async e => {
     const created = [];
     for(const t of up){
       const name = nextName(t.node.country_code);
-      await api('/api/mihomo/add?name=' + encodeURIComponent(name) + '&port=' + t.port, {method:'POST'});
+      const params = new URLSearchParams({name, port:String(t.port), template:$('#mtemplate').value, mode:$('#mmode').value, public_address:$('#maddress').value, public_port:$('#mport').value, host:$('#mhost').value, sni:$('#msni').value, path:$('#mpath').value, public_key:$('#mpublickey').value, short_id:$('#mshortid').value});
+      await api('/api/mihomo/add?' + params.toString(), {method:'POST'});
       created.push(name);
     }
     const refreshed = await loadMihomo();
     const visible = new Set(refreshed.map(i => i.name));
     if(created.some(name => !visible.has(name))) throw new Error('创建命令已执行，但新入站未能从 Mihomo 绑定列表读回');
+    mihomoModal.classList.remove('open');
     alert('已创建 ' + up.length + ' 个 Mihomo 入站');
   } catch(err) { alert('创建失败: ' + err.message); }
   e.target.disabled = false;
   e.target.textContent = '从选中出口创建';
 };
+
+document.addEventListener('change', async e => {
+  const name = e.target.dataset.bindMihomo;
+  if(!name) return;
+  e.target.disabled = true;
+  try { await api('/api/mihomo/bind?name=' + encodeURIComponent(name) + '&port=' + encodeURIComponent(e.target.value), {method:'POST'}); await loadMihomo(); }
+  catch(err){ alert('切换出口失败: ' + err.message); await loadMihomo(); }
+});
 
 document.addEventListener('click', async e => {
   const name = e.target.dataset.deleteMihomo;

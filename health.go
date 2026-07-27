@@ -90,14 +90,14 @@ func (m *Manager) reconnect(t *Tunnel) {
 		// 否则面板里的路由会指向一个已经不存在的出站。
 		if t.Node.HostName != oldHost {
 			if err := m.rebind(oldHost, t); err != nil {
-				log.Printf("重连后同步 3x-ui 绑定失败: %v", err)
+				log.Printf("重连后同步 Mihomo 绑定失败: %v", err)
 			}
 			return
 		}
 		// 节点名没变也要重写一次出站：出口 IP 可能变了，
 		// 而且上一轮换节点时留下的绑定需要重新指回来。
 		if err := m.resync(t); err != nil {
-			log.Printf("重连后重写 3x-ui 出站失败: %v", err)
+			log.Printf("重连后重写 Mihomo 出站失败: %v", err)
 		}
 	}()
 }
