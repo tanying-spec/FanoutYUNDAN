@@ -6,3 +6,4 @@ fanout-yundan-tests-*
 *.tar.gz
 *.tgz
 *.log
+.artifact-*/

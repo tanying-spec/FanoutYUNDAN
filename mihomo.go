@@ -806,10 +806,15 @@ func (m *Manager) reconcileMihomo() error {
 }
 
 func (m *Manager) WatchMihomo() {
-	for range time.Tick(time.Minute) {
-		if err := m.reconcileMihomo(); err != nil {
-			fmt.Printf("FanoutYUNDAN Mihomo 配置同步失败: %v\n", err)
+	for {
+		// Mihomo is optional. Reconcile immediately at startup, then keep
+		// checking without producing a warning every minute on SOCKS-only hosts.
+		if _, err := findMihomoConfig(); err == nil {
+			if err := m.reconcileMihomo(); err != nil {
+				fmt.Printf("FanoutYUNDAN Mihomo 配置同步失败: %v\n", err)
+			}
 		}
+		time.Sleep(time.Minute)
 	}
 }
 
