@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // persistedTunnel 是隧道在磁盘上的形态。
@@ -88,10 +89,12 @@ func (m *Manager) restoreState() (int, error) {
 		}
 		node.Config = p.Config
 		t := &Tunnel{
-			Slot:   p.Slot,
-			Port:   p.Port,
-			Node:   node,
-			Status: "starting",
+			Slot:        p.Slot,
+			Port:        p.Port,
+			BindAddress: m.socksBind,
+			Node:        node,
+			Status:      "starting",
+			Since:       time.Now(),
 		}
 		m.mu.Lock()
 		m.tunnels[p.Slot] = t

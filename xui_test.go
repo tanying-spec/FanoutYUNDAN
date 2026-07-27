@@ -5,6 +5,7 @@ import "testing"
 func TestRenameExitSuffix(t *testing.T) {
 	cases := []struct{ remark, label, want string }{
 		{"KR-248", "JP-132", "JP-132"},
+		{"JP-Fanout", "JP-132", "JP-Fanout"},
 		{"线路A-KR-248", "JP-132", "线路A-JP-132"},
 		{"inbound-47525-KR-248", "JP-132", "inbound-47525-JP-132"},
 		{"无格式", "JP-132", "无格式"},

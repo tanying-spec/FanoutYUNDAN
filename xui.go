@@ -1016,12 +1016,18 @@ func (x *XUI) Rebind(oldHost string, target *Tunnel, tunnels []*Tunnel) error {
 
 // renameExitSuffix 把备注末尾的出口标签换成新的。
 // 备注形如 "线路A-KR-248"，只替换最后两段；认不出格式时原样返回。
+var exitSuffixPattern = regexp.MustCompile(`^[A-Z]{2}-[0-9]{1,3}$`)
+
 func renameExitSuffix(remark, newLabel string) string {
 	if remark == "" {
 		return remark
 	}
 	parts := strings.Split(remark, "-")
 	if len(parts) < 2 {
+		return remark
+	}
+	oldLabel := strings.Join(parts[len(parts)-2:], "-")
+	if !exitSuffixPattern.MatchString(oldLabel) {
 		return remark
 	}
 	// 出口标签本身是 "地区-IP尾段" 两段，前面的是用户的原始备注

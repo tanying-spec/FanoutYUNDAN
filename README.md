@@ -1,168 +1,118 @@
-# fanout
+# FanoutYUNDAN
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+FanoutYUNDAN 在一台 VPS 上运行多个独立的 VPN Gate 出口，并直接把选中的出口接入 Mihomo 入站。切换日本、美国或其他出口时，Mihomo 节点的 UUID、端口和分享链接保持不变。
 
-把 VPN Gate 的公共节点变成本地 SOCKS5 端口：一个端口一个出口 IP。
-再给每个出口挂一个节点链接，客户端连哪个端口就从哪个国家出去。
+它不需要 3x-ui，也不依赖 `mh fanout`。Mihomo-lite-argo 只是可选的 Mihomo 安装来源，不是运行依赖。
 
-节点链接有两种管法：同机装了 3x-ui 就接管面板里的入站，没装则 fanout
-自己跑 Xray，建站、改站、发链接都在同一个界面里完成。
+## 一键安装
 
-![主界面](https://images.joeyblog.net/2026/7/27/fanout-dashboard.png)
+用 `root` 登录 VPS 后执行：
 
-四条隧道跑在一台机器上，四个端口对应四个国家的出口，母机自己的 IP 不受影响：
-
-![出口验证](https://images.joeyblog.net/2026/7/26/fanout-6-exit-ip.png)
-
-## 原理
-
-每个节点跑在独立的 network namespace 里，netns 内启动官方 openvpn 客户端。
-SOCKS5 监听在母机，出站连接用 `setns` 切进对应 netns 建立。
-
-这样做的好处：VPN 的路由劫持只影响自己的 netns，不会切断母机的网络；
-多个节点互不干扰，各自一个出口 IP。
-
-```
-客户端 ──> 母机 SOCKS5 :随机端口 ──> netns foN ──> openvpn ──> VPN Gate 节点
+```sh
+curl -fsSL https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh | sh
 ```
 
-## 安装
+支持 Alpine 3.20+、Debian 12+、Ubuntu 22.04+，以及 AMD64、ARM64。VPS 必须提供 `/dev/net/tun`。
 
-需要 root，Linux（依赖 netns）。
+安装结束会直接显示管理地址和访问口令。以后输入：
 
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/fanout/main/install.sh)
+```sh
+fy
 ```
 
-会自动下载对应架构的预编译二进制。也可以 clone 仓库后在源码目录运行同一个脚本，
-那样会从源码编译（需要 Go 1.21+）。
+即可打开中文管理菜单。
 
-依赖（openvpn / curl / openssl / iproute / iptables）会按发行版自动装，
-apt、dnf、yum、pacman、apk、zypper 都认。没装 3x-ui 时还会顺带下载一份
-Xray 到 `/var/lib/fanout/bin/`，装了则跳过，入站交给面板管。
+## 创建节点
 
-服务用 systemd 或 OpenRC 都能装，装完自动开机自启。
+1. 打开安装器显示的管理页面并登录。
+2. 点击“添加节点”，选择国家或具体 VPN Gate 节点。
+3. 出口连通后，在左侧勾选一个或多个出口。
+4. 点击“从选中出口创建”，选择 Mihomo 入口模板和入口模式。
+5. 在右侧复制节点链接，导入 Clash Meta、Mihomo Party 或其他 VLESS 客户端。
 
-**Alpine** 默认不带 bash，先装一下：
+右侧下拉框可以随时切换出口。FanoutYUNDAN 只修改自己创建的用户、SOCKS5 出站和 `IN-USER` 规则，不会重建原有 listener。
 
-```bash
-apk add bash
-bash <(curl -fsSL https://raw.githubusercontent.com/byJoey/fanout/main/install.sh)
+## 入口模式
+
+| 模式 | 适用情况 | 需要填写 |
+| --- | --- | --- |
+| 直连 WS | 客户端直接连接 VPS 或 NAT 映射端口 | 公网 IP/域名、公网端口、WS Path |
+| Cloudflare CDN WS-TLS | 域名开启 Cloudflare 代理 | CDN 域名、443、Host、SNI、WS Path |
+| Cloudflare Argo WS-TLS | 已有 Cloudflare Tunnel 域名 | Tunnel 域名、443、Host、SNI、WS Path |
+| VLESS Reality | Mihomo 已存在 Reality listener | 公网地址、端口、SNI、公钥、Short ID |
+
+公网端口可以与 Mihomo 内部监听端口不同，适合 NAT 端口映射。CDN 和 Argo 模式必须填写浏览器实际访问的域名，不能填写 VPS 内网地址。
+
+## Mihomo 配置
+
+程序自动寻找以下配置：
+
+```text
+/etc/mihomo/config.yaml
+/etc/mihomo/config.yml
+/usr/local/etc/mihomo/config.yaml
+/root/.config/mihomo/config.yaml
 ```
 
-另外 fanout 要在 netns 里跑 openvpn，**宿主必须放开 `/dev/net/tun`**。
-不少 LXC 小鸡没给这个权限，`ls /dev/net/tun` 不存在且 `mknod` 报
-Operation not permitted 的话，这台机器用不了，跟发行版无关。
+其他位置可在服务环境中设置：
 
-装完敲 `f` 打开管理菜单：
-
-![管理菜单](https://images.joeyblog.net/2026/7/26/fanout-7-menu.png)
-
-装完会打印管理界面地址、访问路径和口令：
-
-```
-管理界面  http://<你的IP>:8899/gwPuWHvaNr/
-访问口令  f81120ac328d11c11b
+```sh
+FANOUT_YUNDAN_MIHOMO_CONFIG=/path/to/config.yaml
 ```
 
-路径和口令都是随机生成的，分别存在 `/var/lib/fanout/basepath` 和
-`/var/lib/fanout/password`。路径不对一律返回 404，扫端口的看不到这里跑着什么。
+每次写入前都会用 Mihomo 自检临时配置，并备份为 `config.yaml.fanout-yundan.previous`。验证或重启失败会恢复原文件。程序每分钟对账一次，受管配置被其他工具覆盖后会自动补回。
 
-## 使用
+旧版 `/etc/mihomo/fanout-bindings.db` 会在首次读取时自动迁移到：
 
-界面以**出口**为单位：一行就是一条隧道加上挂在它上面的节点链接。
-
-点「新建出口」，选地区和数量，再选一个已有节点作模板，提交后 fanout 会并行
-拉起隧道、为每个出口复制一份节点链接并绑好，进度按目标逐条回报。原来要手点
-五步跨两栏的事，现在一次点击十几秒完成。
-
-![新建出口](https://images.joeyblog.net/2026/7/27/fanout-wizard.png)
-
-每行右侧两个按钮：换一个节点（出口 IP 变、端口不变，已分发的客户端配置不用改），
-或者停掉这个出口。
-
-点节点名进详情，可以改端口、备注、启停，管理客户端，以及改绑到别的出口：
-
-![节点详情](https://images.joeyblog.net/2026/7/27/fanout-detail.png)
-
-一个入站可以挂多套客户端凭据，分发给不同的人；每套都能单独重置，
-重置后旧链接立即失效。
-
-「导出链接」一次性拿到所有节点链接：
-
-![导出链接](https://images.joeyblog.net/2026/7/27/fanout-export.png)
-
-### 节点链接从哪来
-
-同机装了 3x-ui 就直接接管面板里的入站，面板端口、路径、API token 全自动探测，
-开了 SSL 也能识别。没装 3x-ui 时 fanout 自己跑一个 Xray，界面上多一个「新建节点」
-按钮，可以选协议（VLESS / VMess / Trojan）、传输（TCP / WebSocket / gRPC /
-HTTPUpgrade / XHTTP）和安全层（无 / TLS / REALITY）。
-
-![新建节点](https://images.joeyblog.net/2026/7/27/fanout-newnode.png)
-
-REALITY 的密钥对和 shortId 自动生成；TLS 不填证书就生成自签的，分享链接会带上
-证书指纹让客户端固定信任。也可以填自己的证书路径。
-
-两种模式下改端口、启停、加删客户端、绑定出口的操作完全一致，用起来没有区别。
-想固定用哪种，加 `-panel 3x-ui` 或 `-panel native` 启动参数。
-
-## 运维
-
-装完后敲 `f` 打开管理菜单：启停、看日志、查隧道、改端口/口令/访问路径、更新、卸载。
-
-```
-  状态      运行中
-  版本      fanout v0.1.1
-  开机自启  enabled
-
-  管理地址  http://1.2.3.4:8899/gwPuWHvaNr/
-  访问口令  f81120ac328d11c11b
-
-   1) 启动          2) 停止
-   3) 重启          4) 查看日志
-   5) 隧道列表      6) 连接信息
-   7) 改端口        8) 改口令
-   9) 改访问路径   10) 开机自启开关
-  11) 更新         12) 卸载
+```text
+/var/lib/fanout-yundan/mihomo-inbounds.json
 ```
 
-也可以直接带参数用：
+## 常用命令
 
-```bash
-f info       # 连接信息
-f list       # 隧道列表
-f restart    # 重启
-f log        # 跟踪日志
-f update     # 更新到最新版
-f uninstall  # 卸载
+```sh
+fy info                 # 状态、版本、管理地址和口令
+fy list                 # 已保存的出口和 SOCKS5 端口
+fy start|stop|restart   # 管理服务
+fy log                  # 实时日志
+fy port 18899           # 修改管理端口
+fy passwd 新口令       # 修改口令；留空随机生成
+fy path new-path        # 修改路径；留空随机生成
+fy autostart on|off     # 开关开机自启
+fy update               # 更新
+fy uninstall            # 显示卸载确认方式
 ```
 
-隧道状态存在 `/var/lib/fanout/state.json`，重启后自动恢复，端口保持不变。
+SOCKS5 默认只监听 `127.0.0.1`，供同机 Mihomo 使用，不会把无认证代理暴露到公网。
 
-健康检查每 10 秒跑一次，比对出口 IP 是否还是建立隧道时那个——openvpn 挂掉后
-netns 仍能经母机 NAT 出网，只看通不通会漏判。连续两次不符就自动换节点重连，
-槽位和端口不变，原先指向它的节点链接会自动改绑过去。
+确认卸载：
 
-## 已知限制
+```sh
+FANOUT_YUNDAN_UNINSTALL_CONFIRM=DELETE fy uninstall
+```
 
-- 只转发 TCP。SOCKS5 收到域名时在本机解析，隧道内不跑 UDP/DNS。
-- VPN Gate 是志愿者节点，有相当比例已下线或满员（`AUTH_FAILED`）。
-  启动时连不上会自动顺着同地区候选往下试，最多 6 个。
-- 管理界面只有随机路径 + 口令登录，没有 HTTPS。放公网建议前面套一层反代。
+保留出口、口令和绑定状态后卸载：
 
-## 许可
+```sh
+FANOUT_YUNDAN_KEEP_DATA=1 FANOUT_YUNDAN_UNINSTALL_CONFIRM=DELETE fy uninstall
+```
 
-[MIT](LICENSE)。
+卸载会先撤销 FanoutYUNDAN 管理的 Mihomo 用户、代理和规则，但不会删除 Mihomo、Cloudflare Tunnel 或其他节点。
 
-节点来自 [VPN Gate](https://www.vpngate.net/)（筑波大学的学术实验项目），
-本工具只是调用其公开的节点列表并用官方 openvpn 客户端连接，不修改也不代理其服务。
-使用时请遵守 VPN Gate 的条款和你所在地的法律。
+## 工作原理
 
-## 交流
+每个 VPN Gate 节点运行在独立 Linux network namespace 中。OpenVPN 只改变自己的 namespace 路由，母机和其他出口不受影响。母机上的固定 SOCKS5 端口通过 `setns` 从对应 namespace 建立 TCP 连接。
 
-- 交流群：<https://t.me/+ft-zI76oovgwNmRh>
-- 视频教程：<https://youtube.com/@joeyblog>
-- 博客：<https://joeyblog.net>
+```text
+Mihomo 入站 -> IN-USER 规则 -> 固定 SOCKS5 端口 -> netns -> OpenVPN -> VPN Gate 出口
+```
 
-用着有问题、或者想要什么功能，去群里说或提 issue。
+健康检查会验证实际出口 IP。连续失败后自动选择同地区候选节点重连，槽位和 SOCKS5 端口保持不变，因此 Mihomo 链接无需删除重建。
+
+## 限制
+
+- 只转发 TCP；SOCKS5 域名在母机解析。
+- VPN Gate 是志愿者网络，节点可能离线、满员或速度变化。
+- 管理页面使用随机路径和口令，但默认是 HTTP；公网使用建议配置 HTTPS 反向代理或 Cloudflare Tunnel。
+
+版本变化见 [CHANGELOG.md](CHANGELOG.md)。项目延续 [byJoey/fanout](https://github.com/byJoey/fanout) 的 MIT 许可和 network namespace 设计。

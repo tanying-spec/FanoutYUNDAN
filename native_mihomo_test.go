@@ -133,3 +133,22 @@ func TestMigrateLegacyMihomoStoreKeepsLinkAndBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestShareLinkEntryModes(t *testing.T) {
+	client := nativeClient{ID: "22222222-2222-4222-8222-222222222222", Enable: true}
+	direct := &nativeInbound{Port: 48005, PublicPort: 48005, Protocol: "vless", Network: "ws", Path: "/direct", Security: "none", Remark: "Direct"}
+	directLink := shareLink(direct, client, "203.0.113.10")
+	for _, want := range []string{"@203.0.113.10:48005", "security=none", "path=%2Fdirect", "type=ws"} {
+		if !strings.Contains(directLink, want) {
+			t.Fatalf("direct link missing %q: %s", want, directLink)
+		}
+	}
+
+	cdn := &nativeInbound{Port: 443, PublicAddress: "cdn.example.com", PublicPort: 443, Mode: "cdn", Protocol: "vless", Network: "ws", Path: "/cdn", Host: "cdn.example.com", Security: "tls", TLS: &tlsConfig{ServerName: "cdn.example.com"}, Remark: "CDN"}
+	cdnLink := shareLink(cdn, client, "wrong.example.com")
+	for _, want := range []string{"@cdn.example.com:443", "security=tls", "sni=cdn.example.com", "host=cdn.example.com", "fp=chrome", "path=%2Fcdn"} {
+		if !strings.Contains(cdnLink, want) {
+			t.Fatalf("cdn link missing %q: %s", want, cdnLink)
+		}
+	}
+}

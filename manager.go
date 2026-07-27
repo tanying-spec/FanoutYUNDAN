@@ -11,20 +11,22 @@ import (
 
 // Manager 维护所有隧道，负责分配槽位与端口。
 type Manager struct {
-	mu       sync.RWMutex
-	tunnels  map[int]*Tunnel
-	nodes    []Node
-	fetched  time.Time
-	workDir  string
-	maxSlots int
-	jobs     JobStore
+	mu        sync.RWMutex
+	tunnels   map[int]*Tunnel
+	nodes     []Node
+	fetched   time.Time
+	workDir   string
+	socksBind string
+	maxSlots  int
+	jobs      JobStore
 }
 
-func NewManager(maxSlots int, workDir string) *Manager {
+func NewManager(maxSlots int, workDir, socksBind string) *Manager {
 	return &Manager{
-		tunnels:  map[int]*Tunnel{},
-		workDir:  workDir,
-		maxSlots: maxSlots,
+		tunnels:   map[int]*Tunnel{},
+		workDir:   workDir,
+		socksBind: socksBind,
+		maxSlots:  maxSlots,
 	}
 }
 
@@ -89,11 +91,12 @@ func (m *Manager) Start(node Node) (*Tunnel, error) {
 		return nil, err
 	}
 	t := &Tunnel{
-		Slot:   slot,
-		Port:   port,
-		Node:   node,
-		Status: "starting",
-		Since:  time.Now(),
+		Slot:        slot,
+		Port:        port,
+		BindAddress: m.socksBind,
+		Node:        node,
+		Status:      "starting",
+		Since:       time.Now(),
 	}
 	m.tunnels[slot] = t
 	m.mu.Unlock()

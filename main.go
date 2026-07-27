@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,14 +20,22 @@ var version = "dev"
 
 func main() {
 	var (
-		webPort  = flag.Int("web", 8899, "Web 管理端口")
-		maxSlots = flag.Int("max", 20, "最多同时运行的隧道数")
-		workDir  = flag.String("dir", "/var/lib/fanout", "工作目录")
+		webPort   = flag.Int("web", 8899, "Web 管理端口")
+		webBind   = flag.String("web-bind", "0.0.0.0", "Web 监听地址")
+		socksBind = flag.String("socks-bind", "127.0.0.1", "SOCKS5 监听地址")
+		maxSlots  = flag.Int("max", 20, "最多同时运行的隧道数")
+		workDir   = flag.String("dir", "/var/lib/fanout-yundan", "工作目录")
 	)
 	panelMode := flag.String("panel", "mihomo", "兼容参数；FanoutYUNDAN 固定使用 Mihomo")
 	showVersion := flag.Bool("version", false, "显示版本后退出")
 	cleanupMihomo := flag.Bool("cleanup-mihomo", false, "移除 FanoutYUNDAN 写入 Mihomo 的配置")
 	flag.Parse()
+	if net.ParseIP(*webBind) == nil {
+		log.Fatalf("web-bind 地址无效: %s", *webBind)
+	}
+	if net.ParseIP(*socksBind) == nil {
+		log.Fatalf("socks-bind 地址无效: %s", *socksBind)
+	}
 
 	if *showVersion {
 		fmt.Println("fanout", version)
@@ -61,7 +70,7 @@ func main() {
 		log.Printf("节点链接后端: %s", p.Describe())
 	}
 
-	mgr := NewManager(*maxSlots, *workDir)
+	mgr := NewManager(*maxSlots, *workDir, *socksBind)
 	go mgr.WatchHealth()
 	go func() {
 		log.Printf("正在后台拉取节点列表...")
@@ -104,7 +113,7 @@ func main() {
 	mux.HandleFunc("/api/xui/inbounds", apiXUIInbounds(mgr))
 	mux.HandleFunc("/api/xui/bind", apiXUIBind(mgr))
 	mux.HandleFunc("/api/xui/clone", apiXUIClone(mgr))
-	mux.HandleFunc("/api/xui/detail", apiXUIDetail)
+	mux.HandleFunc("/api/xui/detail", apiXUIDetail(mgr))
 	mux.HandleFunc("/api/xui/links", apiXUILinks)
 	mux.HandleFunc("/api/xui/delete", apiXUIDelete(mgr))
 	mux.HandleFunc("/api/panel/inbound/new", apiInboundCreate(mgr))
@@ -129,7 +138,7 @@ func main() {
 		log.Printf("已生成访问路径，见 %s", filepath.Join(*workDir, "basepath"))
 	}
 
-	addr := fmt.Sprintf(":%d", *webPort)
+	addr := net.JoinHostPort(*webBind, strconv.Itoa(*webPort))
 	log.Printf("管理界面: http://<本机IP>%s%s/", addr, basePath)
 	log.Printf("SOCKS5 端口在 %d-%d 之间随机分配", randPortMin, randPortMax)
 	if err := http.ListenAndServe(addr, StripBasePath(basePath, auth.Wrap(mux))); err != nil {
@@ -401,27 +410,30 @@ func apiXUIClone(m *Manager) http.HandlerFunc {
 }
 
 // apiXUIDetail 返回某个入站的详情，含客户端与可直接复制的分享链接。
-func apiXUIDetail(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.Atoi(r.URL.Query().Get("id"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id 参数无效"})
-		return
+func apiXUIDetail(m *Manager) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.Atoi(r.URL.Query().Get("id"))
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id 参数无效"})
+			return
+		}
+		x, err := openPanel()
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		host := r.URL.Query().Get("host")
+		if host == "" {
+			host = publicHost(r)
+		}
+		detail, err := x.InboundDetail(id, host)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+			return
+		}
+		detail.BoundUp = liveHosts(m)[detail.BoundTo]
+		writeJSON(w, http.StatusOK, detail)
 	}
-	x, err := openPanel()
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	host := r.URL.Query().Get("host")
-	if host == "" {
-		host = publicHost(r)
-	}
-	detail, err := x.InboundDetail(id, host)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, detail)
 }
 
 // publicHost 猜一个客户端能连上的地址：优先用访问 fanout 时用的主机名。

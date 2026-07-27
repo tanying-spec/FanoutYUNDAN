@@ -13,13 +13,14 @@ import (
 
 // Tunnel 是一条运行中的隧道：一个 netns + 一个 openvpn 进程 + 一个本地 SOCKS5 端口。
 type Tunnel struct {
-	Slot   int       `json:"slot"`
-	Port   int       `json:"port"`
-	Node   Node      `json:"node"`
-	Status string    `json:"status"` // starting | up | failed | stopped
-	ExitIP string    `json:"exit_ip"`
-	Err    string    `json:"err,omitempty"`
-	Since  time.Time `json:"since"`
+	Slot        int       `json:"slot"`
+	Port        int       `json:"port"`
+	Node        Node      `json:"node"`
+	Status      string    `json:"status"` // starting | up | failed | stopped
+	ExitIP      string    `json:"exit_ip"`
+	Err         string    `json:"err,omitempty"`
+	Since       time.Time `json:"since"`
+	BindAddress string    `json:"-"`
 
 	ns       string
 	listener net.Listener
@@ -183,12 +184,16 @@ func (t *Tunnel) stopOpenVPN() {
 // 监听必须留在母机侧：netns 内的 loopback 与母机彼此独立，
 // 监听在 netns 里的话外部根本连不上。
 func (t *Tunnel) serve() error {
+	bindAddress := t.BindAddress
+	if bindAddress == "" {
+		bindAddress = "127.0.0.1"
+	}
 	// 端口要尽量保持不变，否则用户已经分发出去的客户端配置会失效。
 	// 进程刚重启时旧监听可能还在 TIME_WAIT，这里给几秒重试窗口。
 	var ln net.Listener
 	var err error
 	for i := 0; i < 6; i++ {
-		ln, err = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", t.Port))
+		ln, err = net.Listen("tcp", net.JoinHostPort(bindAddress, fmt.Sprintf("%d", t.Port)))
 		if err == nil {
 			break
 		}
@@ -200,7 +205,7 @@ func (t *Tunnel) serve() error {
 		if perr != nil {
 			return fmt.Errorf("监听 %d 失败且无备用端口: %w", t.Port, err)
 		}
-		ln, err = net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", port))
+		ln, err = net.Listen("tcp", net.JoinHostPort(bindAddress, fmt.Sprintf("%d", port)))
 		if err != nil {
 			return fmt.Errorf("监听 %d 失败: %w", port, err)
 		}
