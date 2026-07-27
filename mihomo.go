@@ -70,22 +70,52 @@ func apiMihomoInbounds(w http.ResponseWriter, r *http.Request) {
 
 func apiMihomoAdd(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
-	node := strings.TrimSpace(r.URL.Query().Get("node"))
 	port := strings.TrimSpace(r.URL.Query().Get("port"))
-	if name == "" || node == "" || port == "" {
-		writeJSON(w, 400, map[string]string{"error": "缺少节点名称、复用节点或 SOCKS 端口"})
+	if name == "" || port == "" {
+		writeJSON(w, 400, map[string]string{"error": "缺少节点名称或 SOCKS 端口"})
 		return
 	}
 	if !regexp.MustCompile(`^[A-Za-z0-9._-]{1,48}$`).MatchString(name) {
 		writeJSON(w, 400, map[string]string{"error": "节点名称只能包含字母、数字、点、下划线和短横线"})
 		return
 	}
-	out, err := runMH("fanout", "add", name, "vless-ws", port)
+	node, err := findMihomoSourceNode("/etc/mihomo/nodes.db")
+	if err != nil {
+		writeJSON(w, 409, map[string]string{"error": err.Error()})
+		return
+	}
+	out, err := runMH("fanout", "add", name, node, port)
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "已创建 Mihomo 入站", "output": out})
+}
+
+func findMihomoSourceNode(path string) (string, error) {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("无法读取 Mihomo 节点配置: %v", err)
+	}
+	var fallback string
+	for _, line := range strings.Split(string(blob), "\n") {
+		fields := strings.Split(line, "|")
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "vless-ws":
+			return fields[1], nil
+		case "vless-reality":
+			if fallback == "" {
+				fallback = fields[1]
+			}
+		}
+	}
+	if fallback != "" {
+		return fallback, nil
+	}
+	return "", fmt.Errorf("Mihomo 尚无 VLESS WS/Reality 基础入站，请先用 mh 创建一个 VLESS 节点")
 }
 
 func apiMihomoDelete(w http.ResponseWriter, r *http.Request) {

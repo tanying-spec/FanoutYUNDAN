@@ -341,14 +341,23 @@ async function loadMihomo(){
 $('#createMihomo').onclick = async e => {
   const up = tunnels.filter(t => t.status === 'up' && picked.has(t.slot));
   if(!up.length){ alert('先在左侧勾选已连接的出口'); return; }
-  const name = prompt('入站名称（每个出口一个名称）', up.length === 1 ? up[0].node.country_code + '-Fanout' : 'Fanout-' + Date.now());
-  if(!name) return;
+  const used = new Set(mihomoInbounds.map(i => i.name));
+  const nextName = country => {
+    const base = (country || 'Exit') + '-Fanout';
+    let name = base, n = 2;
+    while(used.has(name)) name = base + '-' + n++;
+    used.add(name);
+    return name;
+  };
   e.target.disabled = true;
+  e.target.textContent = '创建中';
   try {
-    for(const t of up) await api('/api/mihomo/add?name=' + encodeURIComponent(up.length === 1 ? name : name + '-' + t.node.country_code) + '&node=vless-ws&port=' + t.port, {method:'POST'});
+    for(const t of up) await api('/api/mihomo/add?name=' + encodeURIComponent(nextName(t.node.country_code)) + '&port=' + t.port, {method:'POST'});
     await loadMihomo();
+    alert('已创建 ' + up.length + ' 个 Mihomo 入站');
   } catch(err) { alert('创建失败: ' + err.message); }
   e.target.disabled = false;
+  e.target.textContent = '从选中出口创建';
 };
 
 document.addEventListener('click', async e => {
