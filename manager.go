@@ -137,6 +137,7 @@ func (m *Manager) bringUp(t *Tunnel, notify bool) {
 			return
 		}
 		lastErr = err
+		t.stopOpenVPN()
 		t.teardownNetns()
 	}
 
@@ -157,16 +158,16 @@ func (m *Manager) tryNode(t *Tunnel) error {
 	if err := t.startOpenVPN(m.workDir); err != nil {
 		return err
 	}
-	if t.listener == nil {
-		if err := t.serve(); err != nil {
-			return err
-		}
-	}
 	ip, err := t.probeExitIP()
 	if err != nil {
 		return err
 	}
 	t.ExitIP = ip
+	if t.listener == nil {
+		if err := t.serve(); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

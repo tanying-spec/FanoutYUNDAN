@@ -13,13 +13,13 @@ import (
 
 // Tunnel 是一条运行中的隧道：一个 netns + 一个 openvpn 进程 + 一个本地 SOCKS5 端口。
 type Tunnel struct {
-	Slot     int    `json:"slot"`
-	Port     int    `json:"port"`
-	Node     Node   `json:"node"`
-	Status   string `json:"status"` // starting | up | failed | stopped
-	ExitIP   string `json:"exit_ip"`
-	Err      string `json:"err,omitempty"`
-	Since    time.Time `json:"since"`
+	Slot   int       `json:"slot"`
+	Port   int       `json:"port"`
+	Node   Node      `json:"node"`
+	Status string    `json:"status"` // starting | up | failed | stopped
+	ExitIP string    `json:"exit_ip"`
+	Err    string    `json:"err,omitempty"`
+	Since  time.Time `json:"since"`
 
 	ns       string
 	listener net.Listener
@@ -53,7 +53,7 @@ func (t *Tunnel) setupNetns() error {
 	if err := run("ip", "netns", "add", ns); err != nil {
 		return err
 	}
-	if err := run("ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"); err != nil {
+	if err := runInNetns(ns, "ip", "link", "set", "lo", "up"); err != nil {
 		return err
 	}
 	if err := run("ip", "link", "add", veth, "type", "veth", "peer", "name", peer); err != nil {
@@ -68,13 +68,13 @@ func (t *Tunnel) setupNetns() error {
 	if err := run("ip", "link", "set", veth, "up"); err != nil {
 		return err
 	}
-	if err := run("ip", "netns", "exec", ns, "ip", "addr", "add", sub+".2/30", "dev", peer); err != nil {
+	if err := runInNetns(ns, "ip", "addr", "add", sub+".2/30", "dev", peer); err != nil {
 		return err
 	}
-	if err := run("ip", "netns", "exec", ns, "ip", "link", "set", peer, "up"); err != nil {
+	if err := runInNetns(ns, "ip", "link", "set", peer, "up"); err != nil {
 		return err
 	}
-	if err := run("ip", "netns", "exec", ns, "ip", "route", "add", "default", "via", sub+".1"); err != nil {
+	if err := runInNetns(ns, "ip", "route", "add", "default", "via", sub+".1"); err != nil {
 		return err
 	}
 
@@ -138,7 +138,7 @@ func (t *Tunnel) startOpenVPN(dir string) error {
 	}
 
 	logPath := filepath.Join(dir, ns+".log")
-	cmd := exec.Command("ip", "netns", "exec", ns, "openvpn",
+	cmd := commandInNetns(ns, "openvpn",
 		"--config", cfgPath,
 		"--auth-user-pass", authPath,
 		"--auth-nocache",
@@ -158,7 +158,7 @@ func (t *Tunnel) startOpenVPN(dir string) error {
 	// openvpn 建好 tun0 前 SOCKS5 无法正常出网，这里等它就绪
 	deadline := time.Now().Add(40 * time.Second)
 	for time.Now().Before(deadline) {
-		if out, err := exec.Command("ip", "netns", "exec", ns, "ip", "-4", "addr", "show", "tun0").Output(); err == nil {
+		if out, err := commandInNetns(ns, "ip", "-4", "addr", "show", "tun0").Output(); err == nil {
 			if strings.Contains(string(out), "inet ") {
 				return nil
 			}
@@ -168,7 +168,15 @@ func (t *Tunnel) startOpenVPN(dir string) error {
 		}
 		time.Sleep(time.Second)
 	}
+	t.stopOpenVPN()
 	return fmt.Errorf("等待 tun0 就绪超时，详见 %s", logPath)
+}
+
+func (t *Tunnel) stopOpenVPN() {
+	if t.ovpn != nil && t.ovpn.Process != nil {
+		_ = t.ovpn.Process.Kill()
+	}
+	t.ovpn = nil
 }
 
 // serve 在母机上监听 SOCKS5 端口，出站连接则在 netns 内建立。
@@ -215,8 +223,12 @@ func (t *Tunnel) serve() error {
 
 // probeExitIP 通过隧道查询出口 IP，用于确认这条隧道确实换了 IP。
 func (t *Tunnel) probeExitIP() (string, error) {
-	out, err := exec.Command("ip", "netns", "exec", t.nsName(),
-		"curl", "-s", "--max-time", "15", "http://api.ipify.org").Output()
+	ipifyIP, err := lookupIPv4("api.ipify.org")
+	if err != nil {
+		return "", fmt.Errorf("解析出口检测地址失败: %w", err)
+	}
+	out, err := commandInNetns(t.nsName(), "curl", "-s", "--max-time", "15",
+		"--resolve", "api.ipify.org:80:"+ipifyIP, "http://api.ipify.org").Output()
 	if err != nil {
 		return "", fmt.Errorf("查询出口 IP 失败: %w", err)
 	}
@@ -235,10 +247,7 @@ func (t *Tunnel) stop() {
 		t.listener.Close()
 		t.listener = nil
 	}
-	if t.ovpn != nil && t.ovpn.Process != nil {
-		_ = t.ovpn.Process.Kill()
-		t.ovpn = nil
-	}
+	t.stopOpenVPN()
 	t.teardownNetns()
 	t.Status = "stopped"
 }

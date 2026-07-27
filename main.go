@@ -62,12 +62,6 @@ func main() {
 	}
 
 	mgr := NewManager(*maxSlots, *workDir)
-	if n, err := mgr.restoreState(); err != nil {
-		log.Printf("恢复上次状态失败: %v", err)
-	} else if n > 0 {
-		log.Printf("正在恢复上次的 %d 条隧道", n)
-	}
-
 	go mgr.WatchHealth()
 	go func() {
 		log.Printf("正在后台拉取节点列表...")
@@ -75,6 +69,11 @@ func main() {
 			log.Printf("拉取失败（可在 Web 界面重试）: %v", err)
 		} else {
 			log.Printf("已获取 %d 个节点", n)
+		}
+		if n, err := mgr.restoreState(); err != nil {
+			log.Printf("恢复上次状态失败: %v", err)
+		} else if n > 0 {
+			log.Printf("正在恢复上次的 %d 条隧道", n)
 		}
 	}()
 

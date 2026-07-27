@@ -109,9 +109,9 @@ func (n *Native) InboundDetail(id int, publicHost string) (*InboundDetail, error
 			Remark: ib.Remark, Enable: ib.Enable, Tag: ib.tag(),
 			BoundTo: ib.BoundTo,
 		},
-		Listen:  "0.0.0.0",
+		Listen:  "127.0.0.1",
 		Network: ib.netOrTCP(),
-		TLS:     "none",
+		TLS:     ib.securityOrNone(),
 	}
 	for _, c := range ib.Clients {
 		id := c.ID

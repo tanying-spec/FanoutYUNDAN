@@ -1,12 +1,45 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"runtime"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
+
+func commandInNetns(nsName, name string, args ...string) *exec.Cmd {
+	if nsenter, err := exec.LookPath("nsenter"); err == nil {
+		nsArgs := []string{"--net=/var/run/netns/" + nsName, "--", name}
+		return exec.Command(nsenter, append(nsArgs, args...)...)
+	}
+	ipArgs := []string{"netns", "exec", nsName, name}
+	return exec.Command("ip", append(ipArgs, args...)...)
+}
+
+func runInNetns(nsName, name string, args ...string) error {
+	out, err := commandInNetns(nsName, name, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s in netns %s: %v: %s", name, nsName, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func lookupIPv4(host string) (string, error) {
+	addresses, err := net.LookupIP(host)
+	if err != nil {
+		return "", err
+	}
+	for _, address := range addresses {
+		if v4 := address.To4(); v4 != nil {
+			return v4.String(), nil
+		}
+	}
+	return "", fmt.Errorf("%s 没有 IPv4 地址", host)
+}
 
 // dialerInNetns 返回一个在指定 netns 内建立出站连接的 dial 函数。
 // 每次拨号都要切一次 netns，因为 socket 的归属在创建时确定。
