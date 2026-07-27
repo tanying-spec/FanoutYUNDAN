@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v2.1.0 - 2026-07-27
 
 - 基于最新版原版 Fanout 恢复完整界面、VPN Gate 切换与健康检查工作流。
 - 使用已有 Mihomo listener 创建独立节点，切换出口时保持 UUID、端口和分享链接不变。
