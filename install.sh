@@ -74,6 +74,15 @@ service_cmd() {
   if command -v rc-service >/dev/null 2>&1; then rc-service fanout-yundan "$1"
   else systemctl "$1" fanout-yundan; fi
 }
+service_running() {
+  if command -v rc-service >/dev/null 2>&1; then rc-service fanout-yundan status >/dev/null 2>&1
+  else systemctl is-active --quiet fanout-yundan; fi
+}
+autostart_enabled() {
+  if command -v rc-update >/dev/null 2>&1; then rc-update show default 2>/dev/null | grep -q fanout-yundan
+  else systemctl is-enabled --quiet fanout-yundan; fi
+}
+random_hex() { od -An -N "$1" -tx1 /dev/urandom | tr -d ' \n'; }
 if [ "$#" -eq 0 ]; then
   printf '%s\n' \
     'FanoutYUNDAN 管理菜单' \
@@ -86,7 +95,7 @@ if [ "$#" -eq 0 ]; then
     '7. 修改管理端口' \
     '8. 修改访问口令' \
     '9. 修改访问路径' \
-    '10. 查看开机自启状态' \
+    '10. 切换开机自启' \
     '11. 更新' \
     '12. 卸载'
   printf '请选择 [1-12]：'
@@ -97,12 +106,17 @@ if [ "$#" -eq 0 ]; then
     7) printf '新端口：'; read -r value; set -- port "$value" ;;
     8) printf '新口令（至少 8 个字符）：'; read -r value; set -- passwd "$value" ;;
     9) printf '新路径（6-48 个字母、数字、_、-）：'; read -r value; set -- path "$value" ;;
-    10) set -- autostart status ;; 11) set -- update ;; 12) set -- uninstall ;;
+    10) set -- autostart toggle ;; 11) set -- update ;; 12) set -- uninstall ;;
     *) printf '无效选择。\n' >&2; exit 1 ;;
   esac
 fi
 case "$1" in
   info)
+    service_running && printf '服务状态：运行中\n' || printf '服务状态：已停止\n'
+    printf '程序版本：'; /usr/local/bin/fanout-yundan -version 2>/dev/null || printf '未知\n'
+    autostart_enabled && printf '开机自启：开启\n' || printf '开机自启：关闭\n'
+    count="$(jq -r '.tunnels | length' "$DIR/state.json" 2>/dev/null || printf 0)"
+    printf '已保存出口：%s 条\n' "$count"
     ip="$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || printf '<服务器IP>')"
     path="$(tr -d '[:space:]' < "$DIR/basepath" 2>/dev/null || true)"
     printf '管理页面：http://%s:%s/%s/\n' "$ip" "${WEB_PORT:-8899}" "$path"
@@ -123,21 +137,29 @@ case "$1" in
     port="${2:-}"
     case "$port" in ''|*[!0-9]*) printf '端口必须是数字。\n' >&2; exit 1 ;; esac
     [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { printf '端口必须在 1-65535 之间。\n' >&2; exit 1; }
+    if [ "$port" != "${WEB_PORT:-8899}" ] && ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then
+      printf '端口 %s 已被占用。\n' "$port" >&2; exit 1
+    fi
     curl -fsSL "https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh" | env FANOUT_YUNDAN_DIR="$DIR" FANOUT_YUNDAN_WEB_PORT="$port" sh
     ;;
   passwd)
     value="${2:-}"
+    [ -n "$value" ] || value="$(random_hex 9)"
     [ "${#value}" -ge 8 ] || { printf '口令至少需要 8 个字符。\n' >&2; exit 1; }
     umask 077; printf '%s\n' "$value" > "$DIR/password"; service_cmd restart
     ;;
   path)
     value="${2:-}"
+    [ -n "$value" ] || value="$(random_hex 8)"
     case "$value" in ''|*[!A-Za-z0-9_-]*) printf '路径只能包含字母、数字、下划线和短横线。\n' >&2; exit 1 ;; esac
     [ "${#value}" -ge 6 ] && [ "${#value}" -le 48 ] || { printf '路径长度必须为 6-48。\n' >&2; exit 1; }
     umask 077; printf '%s\n' "$value" > "$DIR/basepath"; service_cmd restart
     ;;
   autostart)
     value="${2:-status}"
+    if [ "$value" = toggle ]; then
+      if autostart_enabled; then value=off; else value=on; fi
+    fi
     if command -v rc-update >/dev/null 2>&1; then
       case "$value" in on) rc-update add fanout-yundan default ;; off) rc-update del fanout-yundan default ;; status) rc-update show default | grep -q fanout-yundan && printf '开机自启：开启\n' || printf '开机自启：关闭\n' ;; *) exit 1 ;; esac
     else
@@ -148,7 +170,7 @@ case "$1" in
     if command -v rc-service >/dev/null 2>&1; then tail -n 100 -f /var/log/fanout-yundan.log
     else journalctl -u fanout-yundan -n 100 -f; fi
     ;;
-  update) curl -fsSL "https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh" | sh ;;
+  update) curl -fsSL "https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh" | env FANOUT_YUNDAN_DIR="$DIR" sh ;;
   uninstall) curl -fsSL "https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh" | sh -s -- uninstall ;;
   *) printf '用法：fy [info|list|status|start|stop|restart|log|port|passwd|path|autostart|update|uninstall]\n' >&2; exit 1 ;;
 esac
