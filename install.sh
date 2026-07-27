@@ -56,7 +56,7 @@ download_binary() {
   tmp="$(mktemp -d /tmp/fanout-yundan.XXXXXX)"
   trap 'rm -rf "$tmp"' EXIT HUP INT TERM
   asset="fanout-yundan-linux-${ARCH}"
-  base="https://github.com/${REPO}/releases/latest/download"
+  base="${FANOUT_YUNDAN_DOWNLOAD_BASE:-https://github.com/${REPO}/releases/latest/download}"
   say "正在下载 FanoutYUNDAN (${ARCH})..."
   curl -fsSL --retry 3 --connect-timeout 15 "${base}/${asset}" -o "$tmp/$asset" || die "下载程序失败"
   curl -fsSL --retry 3 --connect-timeout 15 "${base}/checksums.txt" -o "$tmp/checksums.txt" || die "下载校验文件失败"
