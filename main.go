@@ -23,7 +23,7 @@ func main() {
 		maxSlots = flag.Int("max", 20, "最多同时运行的隧道数")
 		workDir  = flag.String("dir", "/var/lib/fanout", "工作目录")
 	)
-	panelMode := flag.String("panel", "", "节点链接后端: 留空自动探测, 3x-ui, native")
+	panelMode := flag.String("panel", "mihomo", "兼容参数；FanoutYUNDAN 固定使用 Mihomo")
 	showVersion := flag.Bool("version", false, "显示版本后退出")
 	flag.Parse()
 
@@ -284,7 +284,9 @@ func apiXUIStatus(w http.ResponseWriter, r *http.Request) {
 		"kind":      p.Kind(),
 		"describe":  p.Describe(),
 		// 自建模式下界面要能自己建入站；3x-ui 模式沿用面板里已有的入站做模板
-		"can_create": p.Kind() == "native",
+		// Mihomo listener 可能由 Argo/CDN 共用，不能像独立 Xray 一样随意新开端口。
+		// 完成 listener 模板向导前先隐藏旧的新建入口，避免显示成功却生成不可达节点。
+		"can_create": false,
 	}
 	if x, ok := p.(*XUI); ok {
 		resp["port"] = x.Port

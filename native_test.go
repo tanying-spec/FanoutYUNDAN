@@ -5,15 +5,14 @@ import (
 	"testing"
 )
 
-func TestNativeInboundTagMatchesXUIFormat(t *testing.T) {
-	// tag 格式必须和 3x-ui 一致，否则两种后端的绑定语义会对不上
+func TestNativeInboundTagIsStableAcrossPortChanges(t *testing.T) {
 	cases := []struct {
 		ib   nativeInbound
 		want string
 	}{
-		{nativeInbound{Port: 443, Network: "tcp"}, "in-443-tcp"},
-		{nativeInbound{Port: 8080, Network: "ws"}, "in-8080-ws"},
-		{nativeInbound{Port: 1234}, "in-1234-tcp"}, // 缺省按 tcp
+		{nativeInbound{ID: 1, StableID: "abc123", Port: 443, Network: "tcp"}, "fy-in-abc123"},
+		{nativeInbound{ID: 1, StableID: "abc123", Port: 8080, Network: "ws"}, "fy-in-abc123"},
+		{nativeInbound{ID: 9, Port: 1234}, "fy-in-9"},
 	}
 	for _, c := range cases {
 		if got := c.ib.tag(); got != c.want {

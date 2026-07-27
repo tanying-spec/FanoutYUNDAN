@@ -13,17 +13,17 @@ import (
 // 入站数据存在 native.json，Xray 的运行配置每次改动后整份重新生成。
 // 全量重写比增量改省心：配置是纯函数产物，不会出现改了一半的中间态。
 type Native struct {
-	mu    sync.Mutex
-	dir   string
-	store *nativeStore
-	proc  *xrayProc
+	mu     sync.Mutex
+	dir    string
+	store  *nativeStore
+	mihomo *mihomoBackend
 }
 
 func openNative(workDir string) (*Native, error) {
 	if workDir == "" {
 		return nil, fmt.Errorf("自建模式缺少工作目录")
 	}
-	bin, err := findXray(workDir)
+	backend, err := findMihomo()
 	if err != nil {
 		return nil, err
 	}
@@ -32,38 +32,23 @@ func openNative(workDir string) (*Native, error) {
 		return nil, err
 	}
 	n := &Native{
-		dir:   workDir,
-		store: store,
-		proc:  &xrayProc{bin: bin, dir: workDir},
+		dir:    workDir,
+		store:  store,
+		mihomo: backend,
 	}
-	// 上次进程被强杀时遗留的 Xray 还占着入站端口，先收掉
-	n.proc.reapOrphan()
 	return n, nil
 }
 
 func (n *Native) Kind() string { return "native" }
 
 func (n *Native) Describe() string {
-	return fmt.Sprintf("fanout 自建 Xray（%s）", n.proc.bin)
+	return fmt.Sprintf("直接管理 Mihomo（%s）", n.mihomo.configPath)
 }
 
 // apply 重新生成配置并重启 Xray，然后落盘。
 // 调用方必须已持有 n.mu。
 func (n *Native) apply(tunnels []*Tunnel) error {
-	cfg := buildXrayConfig(n.store.sorted(), tunnels)
-	path, err := writeXrayConfig(n.dir, cfg)
-	if err != nil {
-		return err
-	}
-	if err := verifyXrayConfig(n.proc.bin, path); err != nil {
-		return err
-	}
-	// 没有入站时不必留着进程占资源
-	if len(cfg["inbounds"].([]any)) == 0 {
-		n.proc.stop()
-		return n.store.save(n.dir)
-	}
-	if err := n.proc.restart(path); err != nil {
+	if err := n.mihomo.apply(n.store.sorted(), tunnels); err != nil {
 		return err
 	}
 	return n.store.save(n.dir)
@@ -79,9 +64,7 @@ func (n *Native) OnTunnelsChanged(tunnels []*Tunnel) error {
 
 // Close 停掉自己拉起的 Xray。
 func (n *Native) Close() {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.proc.stop()
+	// Mihomo 是用户已有的系统服务，FanoutYUNDAN 退出时绝不停止它。
 }
 
 func (n *Native) Inbounds(live map[string]bool) ([]Inbound, error) {
@@ -226,26 +209,30 @@ func (n *Native) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunne
 		byHost[t.Node.HostName] = t
 	}
 
-	used := n.store.usedPorts()
 	created := []int{}
 	for _, host := range hosts {
 		t := byHost[host]
 		if t == nil || t.Status != "up" {
 			continue
 		}
-		port, err := freeRandomPort(used)
-		if err != nil {
-			return created, err
+		clients := make([]nativeClient, 0, len(tpl.Clients))
+		for _, c := range tpl.Clients {
+			c.ID, c.Password, c.Username = newUUID(), randomHex(8), ""
+			clients = append(clients, c)
 		}
-		used[port] = true
-
 		clone := &nativeInbound{
-			ID:       n.store.NextID,
-			Port:     port,
-			Protocol: tpl.Protocol,
-			Network:  tpl.Network,
-			Path:     tpl.Path,
-			Host:     tpl.Host,
+			ID:            n.store.NextID,
+			StableID:      randomHex(6),
+			Port:          tpl.Port,
+			Template:      tpl.Template,
+			ListenerPort:  tpl.ListenerPort,
+			PublicAddress: tpl.PublicAddress,
+			PublicPort:    tpl.PublicPort,
+			Mode:          tpl.Mode,
+			Protocol:      tpl.Protocol,
+			Network:       tpl.Network,
+			Path:          tpl.Path,
+			Host:          tpl.Host,
 			// 安全层必须跟着复制：漏掉的话从 REALITY/TLS 模板复制出来的
 			// 入站会变成明文，而分享链接照样标着模板的协议，很难发现
 			Security: tpl.Security,
@@ -253,12 +240,12 @@ func (n *Native) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunne
 			Reality:  tpl.Reality,
 			Remark:   cloneRemark(tpl.Remark, exitLabel(t)),
 			Enable:   true,
-			Clients:  append([]nativeClient(nil), tpl.Clients...),
+			Clients:  clients,
 			BoundTo:  sanitizeTag(t.Node.HostName),
 		}
 		n.store.NextID++
 		n.store.Inbounds = append(n.store.Inbounds, clone)
-		created = append(created, port)
+		created = append(created, clone.ID)
 	}
 
 	if len(created) == 0 {
@@ -351,6 +338,7 @@ func (n *Native) AddClient(id int, email string, tunnels []*Tunnel) error {
 		Enable:   true,
 		Flow:     visionFlow(ib),
 	})
+	ib.clientUsername(len(ib.Clients)-1, &ib.Clients[len(ib.Clients)-1])
 	return n.apply(tunnels)
 }
 
@@ -438,7 +426,7 @@ type NewInboundSpec struct {
 }
 
 // nativeProtocols 是自建模式支持的协议，与前端下拉保持一致。
-var nativeProtocols = map[string]bool{"vless": true, "vmess": true, "trojan": true}
+var nativeProtocols = map[string]bool{"vless": true}
 
 // CreateInbound 新建一个入站，端口留空时随机分配。
 func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*nativeInbound, error) {
@@ -502,15 +490,18 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*nativeI
 	}
 
 	ib := &nativeInbound{
-		ID:       n.store.NextID,
-		Port:     port,
-		Protocol: proto,
-		Network:  network,
-		Path:     path,
-		Host:     strings.TrimSpace(spec.Host),
-		Security: security,
-		Remark:   remark,
-		Enable:   true,
+		ID:           n.store.NextID,
+		StableID:     randomHex(6),
+		Port:         port,
+		ListenerPort: port,
+		PublicPort:   port,
+		Protocol:     proto,
+		Network:      network,
+		Path:         path,
+		Host:         strings.TrimSpace(spec.Host),
+		Security:     security,
+		Remark:       remark,
+		Enable:       true,
 	}
 
 	switch security {
@@ -542,6 +533,7 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*nativeI
 		Flow:     flow,
 		Enable:   true,
 	}}
+	ib.clientUsername(0, &ib.Clients[0])
 
 	n.store.NextID++
 	n.store.Inbounds = append(n.store.Inbounds, ib)
@@ -567,6 +559,13 @@ func cloneRemark(base, label string) string {
 
 // shareLink 生成客户端可直接导入的分享链接。
 func shareLink(ib *nativeInbound, c nativeClient, host string) string {
+	if ib.PublicAddress != "" {
+		host = ib.PublicAddress
+	}
+	port := ib.Port
+	if ib.PublicPort != 0 {
+		port = ib.PublicPort
+	}
 	net := ib.netOrTCP()
 	sec := ib.securityOrNone()
 
@@ -586,6 +585,9 @@ func shareLink(ib *nativeInbound, c nativeClient, host string) string {
 
 	switch sec {
 	case "tls":
+		if ib.Mode == "argo" || ib.Mode == "cdn" {
+			q.Set("fp", "chrome")
+		}
 		if ib.TLS != nil {
 			if ib.TLS.ServerName != "" {
 				q.Set("sni", ib.TLS.ServerName)
@@ -621,14 +623,14 @@ func shareLink(ib *nativeInbound, c nativeClient, host string) string {
 
 	switch ib.Protocol {
 	case "trojan":
-		return fmt.Sprintf("trojan://%s@%s:%d?%s#%s", c.Password, host, ib.Port, q.Encode(), frag)
+		return fmt.Sprintf("trojan://%s@%s:%d?%s#%s", c.Password, host, port, q.Encode(), frag)
 	case "vmess":
 		// vmess 的 base64 形式各家客户端解析不一，用通用的 URI 形式
 		q.Set("encryption", "auto")
-		return fmt.Sprintf("vmess://%s@%s:%d?%s#%s", c.ID, host, ib.Port, q.Encode(), frag)
+		return fmt.Sprintf("vmess://%s@%s:%d?%s#%s", c.ID, host, port, q.Encode(), frag)
 	default:
 		q.Set("encryption", "none")
-		return fmt.Sprintf("vless://%s@%s:%d?%s#%s", c.ID, host, ib.Port, q.Encode(), frag)
+		return fmt.Sprintf("vless://%s@%s:%d?%s#%s", c.ID, host, port, q.Encode(), frag)
 	}
 }
 
@@ -694,29 +696,30 @@ func (n *Native) buildReality(spec NewInboundSpec) (*realityConfig, error) {
 		names = []string{strings.SplitN(dest, ":", 2)[0]}
 	}
 
-	priv, pub, err := realityKeys(n.proc.bin)
-	if err != nil {
-		return nil, err
-	}
-	if err := checkRealityDest(dest, names[0]); err != nil {
-		return nil, fmt.Errorf("REALITY 目标站点不可用，换一个 dest: %w", err)
-	}
+	return nil, fmt.Errorf("Mihomo 后端当前只开放已验证的 VLESS 模板，不支持新建 REALITY")
+	/*
+		priv, pub, err := realityKeys("")
+		if err != nil { return nil, err }
+		if err := checkRealityDest(dest, names[0]); err != nil {
+			return nil, fmt.Errorf("REALITY 目标站点不可用，换一个 dest: %w", err)
+		}
 
-	short := strings.TrimSpace(spec.ShortID)
-	if short == "" {
-		short = randomShortID()
-	}
-	fp := strings.TrimSpace(spec.Fingerprint)
-	if fp == "" {
-		fp = "chrome"
-	}
+		short := strings.TrimSpace(spec.ShortID)
+		if short == "" {
+			short = randomShortID()
+		}
+		fp := strings.TrimSpace(spec.Fingerprint)
+		if fp == "" {
+			fp = "chrome"
+		}
 
-	return &realityConfig{
-		Dest:        dest,
-		ServerNames: names,
-		PrivateKey:  priv,
-		PublicKey:   pub,
-		ShortIDs:    []string{short},
-		Fingerprint: fp,
-	}, nil
+		return &realityConfig{
+			Dest:        dest,
+			ServerNames: names,
+			PrivateKey:  priv,
+			PublicKey:   pub,
+			ShortIDs:    []string{short},
+			Fingerprint: fp,
+		}, nil
+	*/
 }

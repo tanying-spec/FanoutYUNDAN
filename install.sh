@@ -7,7 +7,7 @@
 set -euo pipefail
 
 WEB_PORT="${WEB_PORT:-8899}"
-WORK_DIR="${WORK_DIR:-/var/lib/fanout}"
+WORK_DIR="${WORK_DIR:-/var/lib/fanout-yundan}"
 BIN=/usr/local/bin/fanout
 
 if [[ $EUID -ne 0 ]]; then
@@ -167,43 +167,24 @@ else
   rm -rf "$TMP"
 fi
 
-echo "[3/6] 准备 Xray"
-# 没装 3x-ui 时 fanout 自己跑 Xray，需要一份二进制。
-# 装到 WORK_DIR/bin 下而不是 /usr/local/bin，避免和机器上别人的 xray 抢版本。
-mkdir -p "${WORK_DIR}/bin"
-if command -v /usr/local/x-ui/x-ui >/dev/null 2>&1 || [[ -x /usr/bin/x-ui ]]; then
-  echo "      检测到 3x-ui，入站交给面板管，跳过"
-elif [[ -x "${WORK_DIR}/bin/xray" ]]; then
-  echo "      已有 $("${WORK_DIR}/bin/xray" version 2>/dev/null | head -1)"
-else
-  case "$GOARCH" in
-    amd64) XRAY_ASSET=Xray-linux-64.zip ;;
-    arm64) XRAY_ASSET=Xray-linux-arm64-v8a.zip ;;
-  esac
-  echo "      下载 Xray (${XRAY_ASSET})"
-  XT=$(mktemp -d)
-  XURL="https://github.com/XTLS/Xray-core/releases/latest/download/${XRAY_ASSET}"
-  if curl -fsSL "$XURL" -o "$XT/x.zip"; then
-    # 只为解一个 zip 装 unzip 有点重，busybox 环境常自带
-    if command -v unzip >/dev/null; then
-      unzip -qo "$XT/x.zip" -d "$XT"
-    elif command -v busybox >/dev/null && busybox unzip -h >/dev/null 2>&1; then
-      busybox unzip -qo "$XT/x.zip" -d "$XT"
-    else
-      [[ -n "$MGR" ]] && install_pkgs "$MGR" unzip >/dev/null 2>&1 || true
-      command -v unzip >/dev/null && unzip -qo "$XT/x.zip" -d "$XT"
-    fi
-    if [[ -f "$XT/xray" ]]; then
-      install -m 755 "$XT/xray" "${WORK_DIR}/bin/xray"
-      echo "      $("${WORK_DIR}/bin/xray" version 2>/dev/null | head -1)"
-    else
-      echo "      解压失败，自建模式不可用（装了 3x-ui 则不受影响）" >&2
-    fi
-  else
-    echo "      下载失败，自建模式不可用（装了 3x-ui 则不受影响）" >&2
-  fi
-  rm -rf "$XT"
+echo "[3/6] 检查 Mihomo"
+if ! command -v mihomo >/dev/null 2>&1 \
+  && [[ ! -x /usr/local/bin/mihomo ]] \
+  && [[ ! -x /usr/bin/mihomo ]]; then
+  echo "      未找到 Mihomo。FanoutYUNDAN 复用已有 Mihomo，不会额外安装 Xray 或 3x-ui。" >&2
+  exit 1
 fi
+MIHOMO_CONFIG="${MIHOMO_CONFIG:-}"
+if [[ -z "$MIHOMO_CONFIG" ]]; then
+  for candidate in /etc/mihomo/config.yaml /etc/mihomo/config.yml /root/.config/mihomo/config.yaml /root/.config/mihomo/config.yml; do
+    if [[ -f "$candidate" ]]; then MIHOMO_CONFIG="$candidate"; break; fi
+  done
+fi
+if [[ -z "$MIHOMO_CONFIG" || ! -f "$MIHOMO_CONFIG" ]]; then
+  echo "      未找到 Mihomo 配置。请先配置 Mihomo，或设置 MIHOMO_CONFIG=/路径/config.yaml" >&2
+  exit 1
+fi
+echo "      复用 $MIHOMO_CONFIG（不安装额外内核）"
 
 echo "[4/6] 放行转发"
 sysctl -qw net.ipv4.ip_forward=1

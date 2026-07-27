@@ -15,6 +15,7 @@ import (
 // 复制入站时同一个 client 会挂到所有出口上，用户换出口只需要改端口。
 type nativeClient struct {
 	Email    string `json:"email"`
+	Username string `json:"username,omitempty"`
 	ID       string `json:"id"`       // vless/vmess 用 UUID
 	Password string `json:"password"` // trojan 用密码
 	Enable   bool   `json:"enable"`
@@ -27,12 +28,18 @@ type nativeClient struct {
 //
 // 字段刻意贴着 3x-ui 的入站语义，这样两种后端在界面上表现一致。
 type nativeInbound struct {
-	ID       int    `json:"id"`
-	Port     int    `json:"port"`
-	Protocol string `json:"protocol"` // vless | vmess | trojan
-	Network  string `json:"network"`  // tcp | ws | grpc | httpupgrade | xhttp
-	Path     string `json:"path"`     // ws/httpupgrade/xhttp 路径，grpc 用作 serviceName
-	Host     string `json:"host"`     // ws/httpupgrade/xhttp 的 Host 头
+	ID            int    `json:"id"`
+	StableID      string `json:"stable_id,omitempty"`
+	Port          int    `json:"port"`
+	Template      string `json:"template,omitempty"`
+	ListenerPort  int    `json:"listener_port,omitempty"`
+	PublicAddress string `json:"public_address,omitempty"`
+	PublicPort    int    `json:"public_port,omitempty"`
+	Mode          string `json:"mode,omitempty"`
+	Protocol      string `json:"protocol"` // vless | vmess | trojan
+	Network       string `json:"network"`  // tcp | ws | grpc | httpupgrade | xhttp
+	Path          string `json:"path"`     // ws/httpupgrade/xhttp 路径，grpc 用作 serviceName
+	Host          string `json:"host"`     // ws/httpupgrade/xhttp 的 Host 头
 	// Security 是传输层安全：none | tls | reality
 	Security string         `json:"security"`
 	TLS      *tlsConfig     `json:"tls,omitempty"`
@@ -71,7 +78,21 @@ type realityConfig struct {
 
 // tag 复原这个入站在 Xray 里的 inboundTag，格式与 3x-ui 保持一致。
 func (n *nativeInbound) tag() string {
-	return fmt.Sprintf("in-%d-%s", n.Port, n.netOrTCP())
+	return "fy-in-" + n.stableID()
+}
+
+func (n *nativeInbound) stableID() string {
+	if n.StableID != "" {
+		return n.StableID
+	}
+	return fmt.Sprintf("%d", n.ID)
+}
+
+func (n *nativeInbound) clientUsername(index int, c *nativeClient) string {
+	if c.Username == "" {
+		c.Username = fmt.Sprintf("fy-%s-%d", n.stableID(), index+1)
+	}
+	return c.Username
 }
 
 func (n *nativeInbound) netOrTCP() string {
@@ -99,7 +120,7 @@ func nativeStatePath(dir string) string { return filepath.Join(dir, "native.json
 func loadNativeStore(dir string) (*nativeStore, error) {
 	blob, err := os.ReadFile(nativeStatePath(dir))
 	if os.IsNotExist(err) {
-		return &nativeStore{NextID: 1}, nil
+		return migrateLegacyMihomoStore(dir)
 	}
 	if err != nil {
 		return nil, err
@@ -111,7 +132,104 @@ func loadNativeStore(dir string) (*nativeStore, error) {
 	if st.NextID < 1 {
 		st.NextID = 1
 	}
+	for _, ib := range st.Inbounds {
+		if ib.StableID == "" {
+			ib.StableID = randomHex(6)
+		}
+		if ib.ListenerPort == 0 {
+			ib.ListenerPort = ib.Port
+		}
+		if ib.PublicPort == 0 {
+			ib.PublicPort = ib.Port
+		}
+		for i := range ib.Clients {
+			ib.clientUsername(i, &ib.Clients[i])
+		}
+	}
 	return &st, nil
+}
+
+type legacyMihomoState struct {
+	Bindings []struct {
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		UUID          string `json:"uuid"`
+		Template      string `json:"template"`
+		Protocol      string `json:"protocol"`
+		Mode          string `json:"mode"`
+		Port          int    `json:"port"`
+		ListenerPort  int    `json:"listener_port"`
+		PublicPort    int    `json:"public_port"`
+		PublicAddress string `json:"public_address"`
+		Host          string `json:"host"`
+		SNI           string `json:"sni"`
+		Path          string `json:"path"`
+	} `json:"bindings"`
+}
+
+func migrateLegacyMihomoStore(dir string) (*nativeStore, error) {
+	st := &nativeStore{NextID: 1}
+	blob, err := os.ReadFile(filepath.Join(dir, "mihomo-inbounds.json"))
+	if os.IsNotExist(err) {
+		return st, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var legacy legacyMihomoState
+	if err := json.Unmarshal(blob, &legacy); err != nil {
+		return nil, fmt.Errorf("解析旧 Mihomo 入站状态失败: %w", err)
+	}
+
+	portsToHost := map[int]string{}
+	if stateBlob, readErr := os.ReadFile(filepath.Join(dir, "state.json")); readErr == nil {
+		var state struct {
+			Tunnels []struct {
+				Port     int    `json:"port"`
+				HostName string `json:"hostname"`
+			} `json:"tunnels"`
+		}
+		if json.Unmarshal(stateBlob, &state) == nil {
+			for _, tunnel := range state.Tunnels {
+				portsToHost[tunnel.Port] = sanitizeTag(tunnel.HostName)
+			}
+		}
+	}
+	for _, old := range legacy.Bindings {
+		id := old.ID
+		if id == "" {
+			id = randomHex(6)
+		}
+		name := old.Name
+		if name == "" {
+			name = "Fanout-" + id
+		}
+		listenerPort := old.ListenerPort
+		if listenerPort == 0 {
+			listenerPort = old.PublicPort
+		}
+		publicPort := old.PublicPort
+		if publicPort == 0 {
+			publicPort = listenerPort
+		}
+		st.Inbounds = append(st.Inbounds, &nativeInbound{
+			ID: st.NextID, StableID: id, Port: publicPort, Template: old.Template,
+			ListenerPort: listenerPort, PublicAddress: old.PublicAddress, PublicPort: publicPort, Mode: old.Mode,
+			Protocol: "vless", Network: "ws", Path: old.Path, Host: old.Host, Security: securityForMode(old.Mode),
+			TLS: &tlsConfig{ServerName: old.SNI}, Remark: name, Enable: true, BoundTo: portsToHost[old.Port],
+			Clients: []nativeClient{{Email: name, Username: name, ID: old.UUID, Enable: true}},
+		})
+		st.NextID++
+	}
+	return st, nil
+}
+
+func securityForMode(mode string) string {
+	switch strings.ToLower(mode) {
+	case "argo", "cdn", "tls":
+		return "tls"
+	}
+	return "none"
 }
 
 func (s *nativeStore) save(dir string) error {

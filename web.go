@@ -433,8 +433,9 @@ let inbounds = [];
 
 // 自建模式下入站由 fanout 自己管，界面要提供新建入口；
 // 接管 3x-ui 时入站归面板管，这里只读不写。
-function isNative(){ return view.backend === 'native'; }
-function backendName(){ return isNative() ? '自建 Xray' : '3x-ui'; }
+function isNative(){ return true; }
+function backendName(){ return 'Mihomo'; }
+function canCreateNode(){ return view.can_create === true; }
 
 const STATUS = {up:'已连通', starting:'连接中', failed:'失败', stopped:'已停止'};
 
@@ -445,7 +446,7 @@ function renderExits(){
   $('#exportAll').disabled = !view.exits.some(e => e.inbounds && e.inbounds.length);
   $('#stopall').disabled = !n;
   // 接管 3x-ui 时入站归面板管，只有自建模式才由 fanout 建节点
-  $('#newnode').hidden = !isNative();
+	$('#newnode').hidden = !canCreateNode();
 
   if(!n){
     list.innerHTML = '<div class="empty">还没有出口'
@@ -603,7 +604,7 @@ async function loadWizard(){
       sel.innerHTML = '<option value="0">还没有节点</option>';
       $('#tplhint').textContent = isNative()
         ? '先用上面的「新建节点」建一个，之后这里可以按它批量生成'
-        : '先在 3x-ui 建一个入站，之后这里可以按它批量生成';
+        : '先在 Mihomo 建一个入站模板，之后这里可以按它批量生成';
       return;
     }
     const opt = i => '<option value="' + i.id + '">'
