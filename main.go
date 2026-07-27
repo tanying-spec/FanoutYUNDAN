@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // version 由构建时通过 -ldflags 注入。
@@ -63,6 +64,7 @@ func main() {
 	} else {
 		log.Printf("已获取 %d 个节点", n)
 	}
+	go retryNodeRefresh(mgr)
 
 	if n, err := mgr.restoreState(); err != nil {
 		log.Printf("恢复上次状态失败: %v", err)
@@ -138,8 +140,27 @@ func apiNodes(m *Manager) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"nodes":     nodes,
 			"fetched":   fetched,
+			"error":     m.NodeError(),
 			"max_slots": m.maxSlots,
 		})
+	}
+}
+
+// retryNodeRefresh handles machines whose network is not ready when the service starts.
+func retryNodeRefresh(m *Manager) {
+	delay := 30 * time.Second
+	for {
+		time.Sleep(delay)
+		if n, err := m.RefreshNodes(); err != nil {
+			log.Printf("自动拉取节点失败，%s 后重试: %v", delay, err)
+			if delay < 10*time.Minute {
+				delay *= 2
+			}
+			continue
+		} else {
+			log.Printf("自动更新了 %d 个节点", n)
+		}
+		delay = 30 * time.Minute
 	}
 }
 

@@ -56,6 +56,8 @@ tr:hover td{background:#1a1f27}
 .s-failed{background:rgba(194,84,80,.16);color:var(--bad)}
 .port{color:var(--accent);font-weight:600}
 .empty{padding:24px 12px;color:var(--dim);text-align:center}
+.notice{margin:10px 12px;padding:8px 10px;border:1px solid rgba(194,84,80,.5);
+  background:rgba(194,84,80,.1);color:#e09a96;border-radius:4px;display:none}
 input[type=search]{font:inherit;background:#0e1116;border:1px solid var(--line);
   color:var(--text);border-radius:4px;padding:4px 8px;width:150px}
 input[type=search]:focus{outline:none;border-color:var(--accent)}
@@ -152,6 +154,7 @@ a.lnk:hover{color:var(--accent);border-color:var(--accent)}
       <input type="search" id="filter" placeholder="按地区/主机名筛选">
       <button id="closemodal">关闭</button>
     </div>
+    <div class="notice" id="nerror"></div>
     <div class="scroll">
       <table>
         <thead><tr>
@@ -190,7 +193,7 @@ a.lnk:hover{color:var(--accent);border-color:var(--accent)}
 
 <script>
 const $ = s => document.querySelector(s);
-let nodes = [], tunnels = [], maxSlots = 1;
+let nodes = [], tunnels = [], maxSlots = 1, nodeError = '';
 const picked = new Set();
 let tplId = 0;
 const ipicked = new Set();
@@ -241,6 +244,9 @@ function renderNodes(){
     || n.country.toLowerCase().includes(kw)
     || n.country_code.toLowerCase().includes(kw));
   $('#ncount').textContent = list.length + ' 个';
+  const notice = $('#nerror');
+  notice.style.display = nodeError ? 'block' : 'none';
+  notice.textContent = nodeError ? '节点列表获取失败：' + nodeError + '。系统会自动重试，也可以点击顶部“重新拉取节点”。' : '';
   $('#nbody').innerHTML = list.slice(0,150).map(n => {
     const busy = running.has(n.hostname);
 	const switchSlot = !busy && tunnels.length >= maxSlots && maxSlots === 1 ? tunnels[0].slot : 0;
@@ -271,6 +277,7 @@ async function poll(){
 async function loadNodes(){
   const d = await api('/api/nodes');
   nodes = d.nodes || [];
+	nodeError = d.error || '';
 	maxSlots = d.max_slots || 1;
   renderNodes();
 }

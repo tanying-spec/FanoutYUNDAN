@@ -15,6 +15,7 @@ type Manager struct {
 	tunnels   map[int]*Tunnel
 	nodes     []Node
 	fetched   time.Time
+	nodeErr   string
 	workDir   string
 	maxSlots  int
 	socksBind string
@@ -35,13 +36,23 @@ func NewManager(maxSlots int, workDir, socksBind string) *Manager {
 func (m *Manager) RefreshNodes() (int, error) {
 	nodes, err := fetchNodes(60 * time.Second)
 	if err != nil {
+		m.mu.Lock()
+		m.nodeErr = err.Error()
+		m.mu.Unlock()
 		return 0, err
 	}
 	m.mu.Lock()
 	m.nodes = nodes
 	m.fetched = time.Now()
+	m.nodeErr = ""
 	m.mu.Unlock()
 	return len(nodes), nil
+}
+
+func (m *Manager) NodeError() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.nodeErr
 }
 
 func (m *Manager) Nodes() ([]Node, time.Time) {
