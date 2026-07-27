@@ -10,6 +10,9 @@ WEB_PORT="${FANOUT_YUNDAN_WEB_PORT:-${WEB_PORT:-8899}}"
 WEB_BIND="${FANOUT_YUNDAN_WEB_BIND:-${WEB_BIND:-0.0.0.0}}"
 MAX_SLOTS="${FANOUT_YUNDAN_MAX_SLOTS:-${MAX_SLOTS:-1}}"
 ACTION="${1:-install}"
+LEGACY_UPGRADE=0
+LEGACY_MIHOMO_CONFIG=""
+LEGACY_MIHOMO_BACKUP="/tmp/fanout-yundan-mihomo-upgrade.yaml"
 
 say() { printf '%s\n' "$*"; }
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
@@ -228,10 +231,80 @@ EOF
 wait_ready() {
   i=0
   while [ "$i" -lt 90 ]; do
-    [ -s "$WORK_DIR/password" ] && [ -s "$WORK_DIR/basepath" ] && return 0
+    running=0
+    if [ "$SYSTEM" = openrc ]; then rc-service fanout-yundan status >/dev/null 2>&1 && running=1
+    else systemctl is-active --quiet fanout-yundan && running=1; fi
+    if [ "$running" = 1 ] && [ -s "$WORK_DIR/password" ] && [ -s "$WORK_DIR/basepath" ]; then
+      saved_port="$(jq -r '.tunnels[0].port // empty' "$WORK_DIR/state.json" 2>/dev/null || true)"
+      if [ -z "$saved_port" ] || ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${saved_port}$"; then
+        return 0
+      fi
+    fi
     i=$((i+1)); sleep 1
   done
-  die "服务未在 90 秒内就绪，请执行 fy log 查看原因"
+  return 1
+}
+
+prepare_legacy_upgrade() {
+  [ "$WORK_DIR" != /var/lib/fanout ] || return 0
+  [ -d /var/lib/fanout ] || return 0
+  if [ "$SYSTEM" = openrc ]; then
+    [ -e /etc/init.d/fanout ] || return 0
+    rc-service fanout stop >/dev/null 2>&1 || true
+  else
+    [ -e /etc/systemd/system/fanout.service ] || return 0
+    systemctl stop fanout >/dev/null 2>&1 || true
+  fi
+  mkdir -p "$WORK_DIR"
+  if [ ! -s "$WORK_DIR/state.json" ]; then
+    cp -a /var/lib/fanout/. "$WORK_DIR/"
+  fi
+  chmod 0700 "$WORK_DIR"
+  for candidate in /etc/mihomo/config.yaml /etc/mihomo/config.yml /usr/local/etc/mihomo/config.yaml /root/.config/mihomo/config.yaml; do
+    if [ -f "$candidate" ]; then
+      LEGACY_MIHOMO_CONFIG="$candidate"
+      cp "$candidate" "$LEGACY_MIHOMO_BACKUP"
+      chmod 0600 "$LEGACY_MIHOMO_BACKUP"
+      break
+    fi
+  done
+  LEGACY_UPGRADE=1
+  say "已迁移旧版 fanout 状态，固定 SOCKS 端口和管理口令将保持不变。"
+}
+
+rollback_legacy_upgrade() {
+  [ "$LEGACY_UPGRADE" = 1 ] || return 0
+  if [ "$SYSTEM" = openrc ]; then
+    rc-service fanout-yundan stop >/dev/null 2>&1 || true
+    if [ -n "$LEGACY_MIHOMO_CONFIG" ] && [ -f "$LEGACY_MIHOMO_BACKUP" ]; then
+      cp "$LEGACY_MIHOMO_BACKUP" "$LEGACY_MIHOMO_CONFIG"
+      rc-service mihomo restart >/dev/null 2>&1 || true
+    fi
+    rc-service fanout start >/dev/null 2>&1 || true
+  else
+    systemctl stop fanout-yundan >/dev/null 2>&1 || true
+    if [ -n "$LEGACY_MIHOMO_CONFIG" ] && [ -f "$LEGACY_MIHOMO_BACKUP" ]; then
+      cp "$LEGACY_MIHOMO_BACKUP" "$LEGACY_MIHOMO_CONFIG"
+      systemctl restart mihomo >/dev/null 2>&1 || true
+    fi
+    systemctl start fanout >/dev/null 2>&1 || true
+  fi
+  rm -f "$LEGACY_MIHOMO_BACKUP"
+}
+
+finish_legacy_upgrade() {
+  [ "$LEGACY_UPGRADE" = 1 ] || return 0
+  if [ "$SYSTEM" = openrc ]; then
+    rc-update del fanout default >/dev/null 2>&1 || true
+    rm -f /etc/init.d/fanout
+  else
+    systemctl disable fanout >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/fanout.service
+    systemctl daemon-reload
+  fi
+  rm -f /usr/local/bin/fanout /usr/local/bin/f
+  rm -rf /var/lib/fanout
+  rm -f "$LEGACY_MIHOMO_BACKUP"
 }
 
 uninstall() {
@@ -260,15 +333,21 @@ detect_system
 validate_config
 install_deps
 download_binary
+prepare_legacy_upgrade
 backup=""
 if [ -x "$BIN" ]; then backup="${BIN}.previous"; cp "$BIN" "$backup"; fi
 install -m 0755 "$tmp/fanout-yundan-linux-${ARCH}" "$BIN"
 write_cli
 if ! write_service; then
   [ -n "$backup" ] && cp "$backup" "$BIN"
+  rollback_legacy_upgrade
   die "服务安装失败，已恢复旧程序"
 fi
-wait_ready
+if ! wait_ready; then
+  rollback_legacy_upgrade
+  die "新服务未能就绪，旧版 fanout 已恢复"
+fi
+finish_legacy_upgrade
 sysctl -qw net.ipv4.ip_forward=1
 say
 say "FanoutYUNDAN 安装完成。"
