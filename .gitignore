@@ -1,0 +1,8 @@
+fanout
+fanout-linux-*
+fanout-tests-linux-*
+fanout-yundan-linux-*
+fanout-yundan-tests-*
+*.tar.gz
+*.tgz
+*.log
