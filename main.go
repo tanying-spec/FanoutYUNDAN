@@ -25,6 +25,7 @@ func main() {
 	)
 	panelMode := flag.String("panel", "mihomo", "兼容参数；FanoutYUNDAN 固定使用 Mihomo")
 	showVersion := flag.Bool("version", false, "显示版本后退出")
+	cleanupMihomo := flag.Bool("cleanup-mihomo", false, "移除 FanoutYUNDAN 写入 Mihomo 的配置")
 	flag.Parse()
 
 	if *showVersion {
@@ -43,6 +44,17 @@ func main() {
 	}
 
 	configurePanel(*workDir, *panelMode)
+	if *cleanupMihomo {
+		n, err := openNative(*workDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := n.Cleanup(); err != nil {
+			log.Fatal(err)
+		}
+		log.Println("已移除 FanoutYUNDAN 写入 Mihomo 的用户、出站和规则")
+		return
+	}
 	if p, err := openPanel(); err != nil {
 		log.Printf("节点链接后端暂不可用（可在 Web 界面查看原因）: %v", err)
 	} else {

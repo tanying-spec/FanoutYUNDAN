@@ -8,7 +8,7 @@ set -euo pipefail
 
 WEB_PORT="${WEB_PORT:-8899}"
 WORK_DIR="${WORK_DIR:-/var/lib/fanout-yundan}"
-BIN=/usr/local/bin/fanout
+BIN=/usr/local/bin/fanout-yundan
 
 if [[ $EUID -ne 0 ]]; then
   echo "需要 root 权限（要创建 netns 和改 iptables）" >&2
@@ -28,50 +28,50 @@ fi
 
 svc_install() {
   if [[ "$INIT_SYS" == systemd ]]; then
-    sed "s#-web 8899#-web ${WEB_PORT}#; s#-dir /var/lib/fanout#-dir ${WORK_DIR}#" fanout.service \
-      > /etc/systemd/system/fanout.service
+	sed "s#/usr/local/bin/fanout#/usr/local/bin/fanout-yundan#; s#-web 8899#-web ${WEB_PORT}#; s#-dir /var/lib/fanout#-dir ${WORK_DIR}#" fanout.service \
+	  > /etc/systemd/system/fanout-yundan.service
     systemctl daemon-reload
   else
     # OpenRC 没有 systemd 那套单元文件，直接写 init script。
     # supervise-daemon 负责守护与重启，等价于 Restart=on-failure。
-    cat > /etc/init.d/fanout <<INITEOF
+    cat > /etc/init.d/fanout-yundan <<INITEOF
 #!/sbin/openrc-run
-name="fanout"
+name="fanout-yundan"
 description="fanout - VPN Gate 出口扇出网关"
 command="${BIN}"
 command_args="-web ${WEB_PORT} -dir ${WORK_DIR}"
 command_background=true
 pidfile="/run/fanout.pid"
-output_log="/var/log/fanout.log"
-error_log="/var/log/fanout.log"
+output_log="/var/log/fanout-yundan.log"
+error_log="/var/log/fanout-yundan.log"
 respawn_delay=5
 respawn_max=0
 supervisor=supervise-daemon
 depend() { need net; after firewall; }
 INITEOF
-    chmod +x /etc/init.d/fanout
+	chmod +x /etc/init.d/fanout-yundan
   fi
 }
 
 svc_enable_start() {
   if [[ "$INIT_SYS" == systemd ]]; then
-    systemctl enable --now fanout
+	systemctl enable --now fanout-yundan
   else
-    rc-update add fanout default >/dev/null 2>&1 || true
-    rc-service fanout restart
+	rc-update add fanout-yundan default >/dev/null 2>&1 || true
+	rc-service fanout-yundan restart
   fi
 }
 
 svc_is_active() {
   if [[ "$INIT_SYS" == systemd ]]; then
-    systemctl is-active --quiet fanout
+	systemctl is-active --quiet fanout-yundan
   else
-    rc-service fanout status >/dev/null 2>&1
+	rc-service fanout-yundan status >/dev/null 2>&1
   fi
 }
 
 svc_logs_hint() {
-  [[ "$INIT_SYS" == systemd ]] && echo "journalctl -u fanout -n 30" || echo "cat /var/log/fanout.log"
+	[[ "$INIT_SYS" == systemd ]] && echo "journalctl -u fanout-yundan -n 30" || echo "cat /var/log/fanout-yundan.log"
 }
 
 echo "[1/6] 检查依赖"
@@ -140,7 +140,7 @@ if [[ ${#need_cmd[@]} -gt 0 ]]; then
 fi
 
 echo "[2/6] 获取程序"
-REPO="${REPO:-byJoey/fanout}"
+REPO="${REPO:-tanying-spec/FanoutYUNDAN}"
 ARCH=$(uname -m)
 case "$ARCH" in
   x86_64)  GOARCH=amd64 ;;

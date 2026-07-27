@@ -2,10 +2,10 @@
 # fanout 管理菜单
 set -uo pipefail
 
-WORK_DIR=/var/lib/fanout
-SERVICE=fanout
-BIN=/usr/local/bin/fanout
-REPO="${REPO:-byJoey/fanout}"
+WORK_DIR=/var/lib/fanout-yundan
+SERVICE=fanout-yundan
+BIN=/usr/local/bin/fanout-yundan
+REPO="${REPO:-tanying-spec/FanoutYUNDAN}"
 
 G='\033[0;32m'; R='\033[0;31m'; Y='\033[0;33m'; B='\033[0;36m'; D='\033[2m'; N='\033[0m'
 
@@ -273,6 +273,8 @@ do_uninstall() {
   [[ ${yes,,} == y ]] || { echo "  已取消"; return; }
 
   svc_stop >/dev/null 2>&1
+  "$BIN" -dir "$WORK_DIR" -cleanup-mihomo >/dev/null 2>&1 || \
+    echo -e "  ${Y}警告：未能自动清理 Mihomo 托管项，请检查配置中的 fy-out-*${N}"
   svc_disable
   # 清掉残留的 netns 与 veth
   for ns in $(ip netns list 2>/dev/null | awk '{print $1}' | grep '^fo[0-9]'); do
@@ -281,7 +283,7 @@ do_uninstall() {
   for l in $(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep '^fov[0-9]'); do
     ip link del "$l" 2>/dev/null
   done
-  rm -f "$UNIT" "$BIN" /usr/local/bin/f
+  rm -f "$UNIT" "$BIN" /usr/local/bin/f /var/log/${SERVICE}.log
   rm -rf "$WORK_DIR"
   svc_reload
   echo -e "  ${G}已卸载${N}"

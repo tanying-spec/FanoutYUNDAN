@@ -67,6 +67,18 @@ func (n *Native) Close() {
 	// Mihomo 是用户已有的系统服务，FanoutYUNDAN 退出时绝不停止它。
 }
 
+func (n *Native) Cleanup() error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	disabled := make([]*nativeInbound, 0, len(n.store.Inbounds))
+	for _, ib := range n.store.Inbounds {
+		copy := *ib
+		copy.Enable = false
+		disabled = append(disabled, &copy)
+	}
+	return n.mihomo.apply(disabled, nil)
+}
+
 func (n *Native) Inbounds(live map[string]bool) ([]Inbound, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
