@@ -26,6 +26,18 @@ detect_system() {
   esac
 }
 
+validate_config() {
+  case "$WORK_DIR" in
+    /var/lib/fanout-yundan|/var/lib/fanout-yundan-*) ;;
+    *) die "数据目录必须是 /var/lib/fanout-yundan 或 /var/lib/fanout-yundan-*" ;;
+  esac
+  case "$WEB_PORT" in *[!0-9]*|'') die "Web 端口必须是数字" ;; esac
+  [ "$WEB_PORT" -ge 1 ] && [ "$WEB_PORT" -le 65535 ] || die "Web 端口必须在 1-65535 之间"
+  case "$MAX_SLOTS" in *[!0-9]*|'') die "出口数量必须是数字" ;; esac
+  [ "$MAX_SLOTS" -ge 1 ] && [ "$MAX_SLOTS" -le 20 ] || die "出口数量必须在 1-20 之间"
+  case "$WEB_BIND" in 0.0.0.0|127.0.0.1) ;; *) die "Web 监听地址仅支持 0.0.0.0 或 127.0.0.1" ;; esac
+}
+
 install_deps() {
   if [ "$SYSTEM" = openrc ]; then
     apk add --no-cache ca-certificates curl iproute2 iptables openvpn util-linux-misc >/dev/null
@@ -140,7 +152,7 @@ wait_ready() {
 }
 
 uninstall() {
-  need_root; detect_system
+  need_root; detect_system; validate_config
   [ "${FANOUT_YUNDAN_UNINSTALL_CONFIRM:-}" = DELETE ] || die "确认卸载请执行：FANOUT_YUNDAN_UNINSTALL_CONFIRM=DELETE fy uninstall"
   if [ "$SYSTEM" = openrc ]; then
     rc-service fanout-yundan stop >/dev/null 2>&1 || true
@@ -159,6 +171,7 @@ uninstall() {
 [ "$ACTION" = uninstall ] && { uninstall; exit 0; }
 need_root
 detect_system
+validate_config
 install_deps
 download_binary
 backup=""
