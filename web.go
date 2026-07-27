@@ -101,7 +101,7 @@ a.lnk:hover{color:var(--accent);border-color:var(--accent)}
 <body>
 <header>
   <h1>FanoutYUNDAN</h1>
-  <span class="count" id="xui">正在检测 Mihomo…</span>
+  <span class="count" id="mihomo-status">正在检测 Mihomo…</span>
   <span class="spacer"></span>
   <nav class="links">
     <a href="https://github.com/tanying-spec/FanoutYUNDAN" target="_blank" rel="noopener" title="源码与问题反馈">GitHub</a>
@@ -211,23 +211,10 @@ a.lnk:hover{color:var(--accent);border-color:var(--accent)}
   </div>
 </div>
 
-<div class="modal" id="detailmodal">
-  <div class="sheet">
-    <div class="head">
-      <h2 id="dtitle">入站详情</h2>
-      <span class="spacer"></span>
-      <button id="closedetail">关闭</button>
-    </div>
-    <div class="scroll" id="dbody"></div>
-  </div>
-</div>
-
 <script>
 const $ = s => document.querySelector(s);
 let nodes = [], tunnels = [], maxSlots = 1, nodeError = '', mihomoTemplates = [];
 const picked = new Set();
-let tplId = 0;
-const ipicked = new Set();
 
 // 界面挂在随机前缀下，请求一律走相对路径，去掉开头的斜杠即可
 async function api(path, opts){
@@ -301,7 +288,7 @@ async function poll(){
   try{
     tunnels = await api('/api/tunnels') || [];
     renderTunnels(); renderNodes();
-    if(inbounds.length) renderInbounds();
+    if(mihomoInbounds.length) loadMihomo();
   }catch(e){}
 }
 
@@ -348,13 +335,12 @@ $('#stopall').onclick = async () => {
 
 $('#filter').oninput = renderNodes;
 
-let inbounds = [];
 let mihomoInbounds = [];
 
 async function loadMihomo(){
   try {
     mihomoInbounds = await api('/api/mihomo/inbounds') || [];
-    $('#xui').textContent = 'Mihomo 入站 ' + mihomoInbounds.length + ' 个';
+    $('#mihomo-status').textContent = 'Mihomo 入站 ' + mihomoInbounds.length + ' 个';
     $('#icount').textContent = mihomoInbounds.length ? mihomoInbounds.length + ' 个' : '';
     $('#iempty').style.display = mihomoInbounds.length ? 'none' : '';
     $('#ibody').innerHTML = mihomoInbounds.map(i => {
@@ -367,7 +353,7 @@ async function loadMihomo(){
     }).join('');
     return mihomoInbounds;
   } catch(e) {
-    $('#xui').textContent = 'Mihomo: ' + e.message;
+    $('#mihomo-status').textContent = 'Mihomo: ' + e.message;
     $('#iempty').textContent = 'Mihomo 未接入或读取失败: ' + e.message;
     $('#iempty').style.display = '';
     return [];
@@ -457,102 +443,6 @@ document.addEventListener('click', async e => {
   catch(err) { alert('删除失败: ' + err.message); e.target.disabled = false; }
 });
 
-async function checkXui(){
-  try{
-    const d = await api('/api/xui');
-    if(d.available){
-      $('#xui').textContent = '3x-ui 面板 ' + (d.scheme || 'http') + ' :' + d.port;
-      loadInbounds();
-    }else{
-      $('#xui').textContent = '3x-ui: ' + d.reason;
-      $('#iempty').textContent = d.reason;
-    }
-  }catch(e){}
-}
-
-async function loadInbounds(){
-  try{
-    inbounds = await api('/api/xui/inbounds') || [];
-    renderInbounds();
-  }catch(e){
-    $('#iempty').textContent = '读取入站失败: ' + e.message;
-  }
-}
-
-function updateInboundCount(){
-  const n = ipicked.size;
-  $('#icount').textContent = inbounds.length
-    ? inbounds.length + ' 个' + (n ? '，已选 ' + n : '')
-    : '';
-}
-
-function renderInbounds(){
-  // 入站被删掉后同步清理勾选
-  const alive = new Set(inbounds.map(i => i.id));
-  for(const id of [...ipicked]) if(!alive.has(id)) ipicked.delete(id);
-  updateInboundCount();
-  $('#iempty').style.display = inbounds.length ? 'none' : '';
-  const box = $('#icheckall');
-  if(box) box.checked = inbounds.length > 0 && ipicked.size === inbounds.length;
-  const up = tunnels.filter(t => t.status === 'up');
-  $('#ibody').innerHTML = inbounds.map(i => {
-    const opts = ['<option value="">直连（不走隧道）</option>'].concat(
-      up.map(t => '<option value="'+esc(t.node.hostname)+'"'
-        + (i.bound_to === t.node.hostname ? ' selected' : '') + '>'
-        + (t.exit_ip || t.node.hostname) + ' · ' + t.port + '</option>')
-    );
-    // 绑定的节点当前没在跑时照实显示，不要悄悄改掉用户的选择
-    if(i.bound_to && !i.bound_up){
-      opts.push('<option value="'+esc(i.bound_to)+'" selected>'
-        + esc(i.bound_to) + '（未运行）</option>');
-    }
-    return '<tr>'
-      + '<td><input type="checkbox" class="ipick" value="'+i.id+'"'
-      +   (ipicked.has(i.id)?' checked':'')+'></td>'
-      + '<td><input type="radio" name="tpl" class="tpl" value="'+i.id+'"'
-      +   (tplId===i.id?' checked':'')+' title="选作复制模板"></td>'
-      + '<td><a href="#" class="lnk" data-detail="'+i.id+'">'
-      +   esc(i.remark || '(无备注)')+'</a>'+(i.enable?'':' <span class="dim">停用</span>')
-      +   ' <span class="dim">'+esc(i.protocol)+'</span></td>'
-      + '<td class="num">'+i.port+'</td>'
-      + '<td><select data-tag="'+esc(i.tag)+'">'+opts.join('')+'</select></td>'
-      + '</tr>';
-  }).join('');
-}
-
-const legacyCloneBtn = $('#cloneBtn');
-if(legacyCloneBtn) legacyCloneBtn.onclick = async e => {
-  if(!tplId){ alert('先在下面选一个入站作为模板'); return; }
-  const up = tunnels.filter(t => t.status === 'up' && picked.has(t.slot));
-  if(!up.length){ alert('先在左边勾选要用的出口'); return; }
-  const tpl = inbounds.find(i => i.id === tplId);
-  const names = up.map(t => '  · ' + (t.exit_ip || ('槽位'+t.slot))).join('\n');
-  if(!confirm('以「' + (tpl ? tpl.remark : tplId) + '」为模板复制 ' + up.length + ' 个入站：\n\n' + names)) return;
-  e.target.disabled = true; e.target.textContent = '复制中';
-  try{
-    const hosts = up.map(t => encodeURIComponent(t.node.hostname)).join(',');
-    const d = await api('/api/xui/clone?id='+tplId+'&hosts='+hosts, {method:'POST'});
-    alert('已创建入站端口: ' + d.created.join(', '));
-    await loadInbounds();
-  }catch(err){ alert('复制失败: ' + err.message); }
-  e.target.disabled = false; e.target.textContent = '按出口复制…';
-};
-
-document.addEventListener('change', async e => {
-  const tag = e.target.dataset.tag;
-  if(!tag) return;
-  e.target.disabled = true;
-  try{
-    await api('/api/xui/bind?tag='+encodeURIComponent(tag)
-      +'&host='+encodeURIComponent(e.target.value), {method:'POST'});
-    await loadInbounds();
-  }catch(err){
-    alert('绑定失败: ' + err.message);
-    await loadInbounds();
-  }
-  e.target.disabled = false;
-});
-
 $('#reloadin').onclick = loadMihomo;
 
 const xmodal = $('#exportmodal');
@@ -580,42 +470,6 @@ $('#copyall').onclick = async e => {
   }
 };
 
-const dmodal = $('#detailmodal');
-$('#closedetail').onclick = () => dmodal.classList.remove('open');
-dmodal.onclick = e => { if(e.target === dmodal) dmodal.classList.remove('open'); };
-
-document.addEventListener('click', async e => {
-  const link = e.target.closest('[data-detail]');
-  if(!link) return;
-  e.preventDefault();
-  $('#dbody').innerHTML = '<div class="empty">读取中…</div>';
-  dmodal.classList.add('open');
-  try{
-    const d = await api('/api/xui/detail?id=' + link.dataset.detail);
-    const t = tunnels.find(x => x.node.hostname === d.bound_to);
-    const exit = t ? (t.exit_ip + '（' + t.node.hostname + '）')
-      : (d.bound_to ? d.bound_to + '（未运行）' : '直连（未绑定隧道）');
-    const clients = d.clients.length
-      ? d.clients.map(c => c.email + '　' + c.id).join('<br>')
-      : '<span class="dim">无</span>';
-    const links = (d.links || []).length
-      ? d.links.map(l => '<div class="share">' + esc(l)
-          + '<br><button data-copy="' + esc(l) + '">复制链接</button></div>').join('')
-      : '<div class="share dim">面板未生成分享链接</div>';
-    $('#dtitle').textContent = (d.remark || '入站') + '　:' + d.port;
-    $('#dbody').innerHTML = '<dl class="kv">'
-      + '<dt>出口</dt><dd>' + esc(exit) + '</dd>'
-      + '<dt>协议</dt><dd>' + esc(d.protocol) + '　' + esc(d.network || '')
-      +   (d.tls && d.tls !== 'none' ? '　' + esc(d.tls) : '') + '</dd>'
-      + '<dt>监听</dt><dd>' + esc(d.listen || '0.0.0.0') + ':' + d.port + '</dd>'
-      + '<dt>Xray tag</dt><dd>' + esc(d.tag) + '</dd>'
-      + '<dt>客户端</dt><dd>' + clients + '</dd>'
-      + '</dl>' + links;
-  }catch(err){
-    $('#dbody').innerHTML = '<div class="empty">读取失败: ' + esc(err.message) + '</div>';
-  }
-});
-
 document.addEventListener('click', async e => {
   const val = e.target.dataset.copy;
   if(!val) return;
@@ -634,7 +488,6 @@ modal.onclick = e => { if(e.target === modal) modal.classList.remove('open'); };
 document.addEventListener('keydown', e => {
   if(e.key === 'Escape'){
     modal.classList.remove('open');
-    dmodal.classList.remove('open');
     xmodal.classList.remove('open');
   }
 });
@@ -645,19 +498,6 @@ document.addEventListener('change', e => {
     const slot = Number(e.target.value);
     e.target.checked ? picked.add(slot) : picked.delete(slot);
     updatePickCount();
-  }
-  if(e.target.classList.contains('ipick')){
-    const id = Number(e.target.value);
-    e.target.checked ? ipicked.add(id) : ipicked.delete(id);
-    updateInboundCount();
-  }
-  if(e.target.id === 'icheckall'){
-    ipicked.clear();
-    if(e.target.checked) inbounds.forEach(i => ipicked.add(i.id));
-    renderInbounds();
-  }
-  if(e.target.classList.contains('tpl')){
-    tplId = Number(e.target.value);
   }
   if(e.target.id === 'checkall'){
     picked.clear();
