@@ -7,12 +7,15 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 )
 
 var vlessLinkRE = regexp.MustCompile(`vless://\S+`)
+var mihomoConfigDirRE = regexp.MustCompile(`(?m)^CONFIG_DIR=["']?([^"'\r\n[:space:]#]+)`)
+var mihomoBindingLineRE = regexp.MustCompile(`(?m)^\s*([A-Za-z0-9._-]+)\s+复用节点=([^[:space:]]+)\s+SOCKS=([0-9]+)`)
 
 type mihomoInbound struct {
 	Name string `json:"name"`
@@ -46,7 +49,12 @@ func apiMihomoInbounds(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
 	}
-	result, err := parseMihomoBindings("/etc/mihomo/fanout-bindings.db", out)
+	configDir, err := mihomoConfigDirFromCLI("/usr/local/bin/mh")
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	result, err := parseMihomoBindings(filepath.Join(configDir, "fanout-bindings.db"), out)
 	if err != nil {
 		writeJSON(w, 502, map[string]string{"error": err.Error()})
 		return
@@ -56,6 +64,7 @@ func apiMihomoInbounds(w http.ResponseWriter, r *http.Request) {
 
 func parseMihomoBindings(path, mhOutput string) ([]mihomoInbound, error) {
 	links := map[string]string{}
+	linkUUIDs := map[string]string{}
 	for _, link := range vlessLinkRE.FindAllString(mhOutput, -1) {
 		parsed, err := url.Parse(link)
 		if err != nil || parsed.Fragment == "" {
@@ -64,16 +73,17 @@ func parseMihomoBindings(path, mhOutput string) ([]mihomoInbound, error) {
 		name, err := url.PathUnescape(parsed.Fragment)
 		if err == nil {
 			links[name] = link
+			if parsed.User != nil {
+				linkUUIDs[name] = parsed.User.Username()
+			}
 		}
 	}
 	blob, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return []mihomoInbound{}, nil
-	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("读取 Mihomo fanout 绑定失败: %v", err)
 	}
 	result := []mihomoInbound{}
+	seen := map[string]bool{}
 	for _, line := range strings.Split(string(blob), "\n") {
 		fields := strings.Split(line, "|")
 		if len(fields) < 4 {
@@ -85,6 +95,19 @@ func parseMihomoBindings(path, mhOutput string) ([]mihomoInbound, error) {
 		}
 		result = append(result, mihomoInbound{
 			Name: fields[0], Node: fields[1], UUID: fields[2], Port: port, Link: links[fields[0]],
+		})
+		seen[fields[0]] = true
+	}
+	for _, match := range mihomoBindingLineRE.FindAllStringSubmatch(mhOutput, -1) {
+		if len(match) < 4 || seen[match[1]] {
+			continue
+		}
+		port := 0
+		if _, err := fmt.Sscanf(match[3], "%d", &port); err != nil || port < 1 {
+			continue
+		}
+		result = append(result, mihomoInbound{
+			Name: match[1], Node: match[2], UUID: linkUUIDs[match[1]], Port: port, Link: links[match[1]],
 		})
 	}
 	return result, nil
@@ -101,7 +124,12 @@ func apiMihomoAdd(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "节点名称只能包含字母、数字、点、下划线和短横线"})
 		return
 	}
-	node, err := findMihomoSourceNode("/etc/mihomo/nodes.db")
+	configDir, err := mihomoConfigDirFromCLI("/usr/local/bin/mh")
+	if err != nil {
+		writeJSON(w, 502, map[string]string{"error": err.Error()})
+		return
+	}
+	node, err := findMihomoSourceNode(filepath.Join(configDir, "nodes.db"))
 	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": err.Error()})
 		return
@@ -112,6 +140,22 @@ func apiMihomoAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"ok": "已创建 Mihomo 入站", "output": out})
+}
+
+func mihomoConfigDirFromCLI(path string) (string, error) {
+	blob, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("读取 Mihomo 管理命令失败: %v", err)
+	}
+	match := mihomoConfigDirRE.FindSubmatch(blob)
+	if len(match) < 2 {
+		return "", fmt.Errorf("无法从 mh 检测 Mihomo 配置目录")
+	}
+	dir := filepath.Clean(string(match[1]))
+	if !filepath.IsAbs(dir) || dir == string(filepath.Separator) {
+		return "", fmt.Errorf("mh 中的 Mihomo 配置目录无效: %s", dir)
+	}
+	return dir, nil
 }
 
 func findMihomoSourceNode(path string) (string, error) {

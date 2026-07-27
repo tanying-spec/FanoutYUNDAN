@@ -22,6 +22,33 @@ func TestParseMihomoBindingsUsesDatabaseAsSource(t *testing.T) {
 	}
 }
 
+func TestParseMihomoBindingsFallsBackToCLIOutput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.db")
+	out := " JP-Fanout  复用节点=ws-main  SOCKS=24536  状态=已连接\n" +
+		"vless://11111111-1111-1111-1111-111111111111@example.com:443?type=ws#JP-Fanout\n"
+	got, err := parseMihomoBindings(path, out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Name != "JP-Fanout" || got[0].Port != 24536 || got[0].UUID == "" {
+		t.Fatalf("unexpected fallback bindings: %#v", got)
+	}
+}
+
+func TestMihomoConfigDirFromCLI(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mh")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nCONFIG_DIR=\"/opt/custom-mihomo\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := mihomoConfigDirFromCLI(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "/opt/custom-mihomo" {
+		t.Fatalf("got %q", got)
+	}
+}
+
 func TestFindMihomoSourceNodePrefersWS(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.db")
 	data := "vless-reality|reality-main|443|rest\nvless-ws|ws-main|8443|rest\n"
