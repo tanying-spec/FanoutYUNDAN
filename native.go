@@ -403,13 +403,17 @@ func visionFlow(ib *nativeInbound) string {
 // 留空的字段都有合理默认：端口随机、备注按协议加端口自动生成、
 // 路径随机、REALITY 的密钥与 shortId 自动生成。
 type NewInboundSpec struct {
-	Protocol string
-	Network  string
-	Port     int
-	Remark   string
-	Path     string
-	Host     string
-	Security string
+	Template      string
+	PublicAddress string
+	PublicPort    int
+	Mode          string
+	Protocol      string
+	Network       string
+	Port          int
+	Remark        string
+	Path          string
+	Host          string
+	Security      string
 	// Vision 请求给 VLESS 客户端启用 xtls-rprx-vision
 	Vision bool
 
@@ -433,17 +437,38 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*nativeI
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	proto := strings.ToLower(strings.TrimSpace(spec.Protocol))
+	templates, err := n.mihomo.templates()
+	if err != nil {
+		return nil, err
+	}
+	var selected *MihomoTemplate
+	for i := range templates {
+		if templates[i].Name == spec.Template || (spec.Template == "" && selected == nil) {
+			selected = &templates[i]
+		}
+	}
+	if selected == nil {
+		return nil, fmt.Errorf("找不到可用的 Mihomo VLESS listener 模板")
+	}
+	spec.Template = selected.Name
+	mode := strings.ToLower(strings.TrimSpace(spec.Mode))
+	if mode == "argo" || mode == "cdn" {
+		if strings.TrimSpace(spec.PublicAddress) == "" {
+			return nil, fmt.Errorf("CDN/Argo 模式必须填写公网域名")
+		}
+		spec.Security, spec.Host, spec.ServerName = "tls", spec.PublicAddress, spec.PublicAddress
+		if spec.PublicPort == 0 {
+			spec.PublicPort = 443
+		}
+	}
+	proto := "vless"
 	if proto == "" {
 		proto = "vless"
 	}
 	if !nativeProtocols[proto] {
 		return nil, fmt.Errorf("不支持的协议 %q", spec.Protocol)
 	}
-	network := strings.ToLower(strings.TrimSpace(spec.Network))
-	if network == "" {
-		network = "tcp"
-	}
+	network := selected.Network
 	if !nativeNetworks[network] {
 		return nil, fmt.Errorf("不支持的传输方式 %q", spec.Network)
 	}
@@ -462,19 +487,15 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*nativeI
 	// VMess 自带加密，但 TLS 在这里是为了流量伪装而不是加密强度，
 	// vmess+ws+tls 是很常见的组合，不该拦。
 
-	used := n.store.usedPorts()
-	port := spec.Port
+	port := spec.PublicPort
 	if port == 0 {
-		p, err := freeRandomPort(used)
-		if err != nil {
-			return nil, err
-		}
-		port = p
-	} else if used[port] {
-		return nil, fmt.Errorf("端口 %d 已被别的入站占用", port)
+		port = spec.Port
+	}
+	if port == 0 {
+		port = selected.Port
 	}
 
-	path := strings.TrimSpace(spec.Path)
+	path := selected.Path
 	if path == "" {
 		switch network {
 		case "ws", "httpupgrade", "xhttp":
@@ -490,27 +511,34 @@ func (n *Native) CreateInbound(spec NewInboundSpec, tunnels []*Tunnel) (*nativeI
 	}
 
 	ib := &nativeInbound{
-		ID:           n.store.NextID,
-		StableID:     randomHex(6),
-		Port:         port,
-		ListenerPort: port,
-		PublicPort:   port,
-		Protocol:     proto,
-		Network:      network,
-		Path:         path,
-		Host:         strings.TrimSpace(spec.Host),
-		Security:     security,
-		Remark:       remark,
-		Enable:       true,
+		ID:            n.store.NextID,
+		StableID:      randomHex(6),
+		Port:          port,
+		Template:      spec.Template,
+		ListenerPort:  selected.Port,
+		PublicAddress: strings.TrimSpace(spec.PublicAddress),
+		PublicPort:    port,
+		Mode:          mode,
+		Protocol:      proto,
+		Network:       network,
+		Path:          path,
+		Host:          strings.TrimSpace(spec.Host),
+		Security:      security,
+		Remark:        remark,
+		Enable:        true,
 	}
 
 	switch security {
 	case "tls":
-		conf, err := n.buildTLS(spec)
-		if err != nil {
-			return nil, err
+		if mode == "argo" || mode == "cdn" {
+			ib.TLS = &tlsConfig{ServerName: spec.ServerName}
+		} else {
+			conf, err := n.buildTLS(spec)
+			if err != nil {
+				return nil, err
+			}
+			ib.TLS = conf
 		}
-		ib.TLS = conf
 	case "reality":
 		conf, err := n.buildReality(spec)
 		if err != nil {

@@ -40,7 +40,9 @@ type ExitsView struct {
 	// 接管面板时入站归面板管，自建模式才由 fanout 自己建。
 	Backend string `json:"backend"`
 	// PanelInfo 是后端的一行说明，显示在标题旁
-	PanelInfo string `json:"panel_info"`
+	PanelInfo string           `json:"panel_info"`
+	CanCreate bool             `json:"can_create"`
+	Templates []MihomoTemplate `json:"templates,omitempty"`
 }
 
 // inboundCache 给入站列表做很短的缓存。界面每几秒轮询一次，
@@ -88,6 +90,11 @@ func (m *Manager) ExitsOf() ExitsView {
 	if p, err := openPanel(); err == nil {
 		view.Backend = p.Kind()
 		view.PanelInfo = p.Describe()
+		if n, ok := p.(*Native); ok {
+			if templates, templateErr := n.mihomo.templates(); templateErr == nil {
+				view.Templates, view.CanCreate = templates, len(templates) > 0
+			}
+		}
 	}
 
 	live := map[string]bool{}

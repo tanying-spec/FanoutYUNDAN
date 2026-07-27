@@ -18,6 +18,39 @@ type mihomoBackend struct {
 	configPath string
 }
 
+type MihomoTemplate struct {
+	Name    string `json:"name"`
+	Port    int    `json:"port"`
+	Network string `json:"network"`
+	Path    string `json:"path,omitempty"`
+	Listen  string `json:"listen,omitempty"`
+}
+
+func (m *mihomoBackend) templates() ([]MihomoTemplate, error) {
+	blob, err := os.ReadFile(m.configPath)
+	if err != nil {
+		return nil, err
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(blob, &cfg); err != nil {
+		return nil, err
+	}
+	var out []MihomoTemplate
+	listeners, _ := cfg["listeners"].([]any)
+	for _, raw := range listeners {
+		l, ok := raw.(map[string]any)
+		if !ok || strings.ToLower(fmt.Sprint(l["type"])) != "vless" {
+			continue
+		}
+		network, path := "tcp", ""
+		if p := fmt.Sprint(l["ws-path"]); p != "<nil>" && p != "" {
+			network, path = "ws", p
+		}
+		out = append(out, MihomoTemplate{Name: fmt.Sprint(l["name"]), Port: yamlInt(l["port"]), Network: network, Path: path, Listen: fmt.Sprint(l["listen"])})
+	}
+	return out, nil
+}
+
 func findMihomo() (*mihomoBackend, error) {
 	bin, err := exec.LookPath("mihomo")
 	if err != nil {

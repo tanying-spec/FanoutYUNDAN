@@ -228,6 +228,23 @@ textarea:focus{outline:none;border-color:var(--accent)}
     </div>
     <div class="body">
       <label class="f">
+        <span>Mihomo 入站模板</span>
+        <select id="ntemplate"></select>
+        <div class="hint">复用已有 listener，只新增独立 UUID，不启动额外内核</div>
+      </label>
+      <label class="f">
+        <span>入口方式</span>
+        <select id="nmode"><option value="direct">直连</option><option value="cdn">CDN WS-TLS</option><option value="argo">Cloudflare Tunnel</option></select>
+      </label>
+      <label class="f">
+        <span>公网地址</span>
+        <input id="npublic" type="text" placeholder="直连可留空；CDN/Argo 填域名">
+      </label>
+      <label class="f">
+        <span>公网端口</span>
+        <input id="npublicport" type="text" inputmode="numeric" placeholder="默认使用 listener 端口；CDN/Argo 通常为 443">
+      </label>
+      <label class="f">
         <span>地区</span>
         <input type="search" id="rgfilter" placeholder="筛选地区">
         <div class="regions" id="regions" style="margin-top:6px"></div>
@@ -437,6 +454,15 @@ function isNative(){ return true; }
 function backendName(){ return 'Mihomo'; }
 function canCreateNode(){ return view.can_create === true; }
 
+function fillMihomoTemplates(){
+  const el = $('#ntemplate');
+  if(!el) return;
+  const old = el.value;
+  el.innerHTML = (view.templates || []).map(t => '<option value="'+esc(t.name)+'">'
+    +esc(t.name)+' · '+esc(t.network)+' · 127.0.0.1:'+t.port+'</option>').join('');
+  if(old) el.value = old;
+}
+
 const STATUS = {up:'已连通', starting:'连接中', failed:'失败', stopped:'已停止'};
 
 function renderExits(){
@@ -529,6 +555,8 @@ function renderJobs(jobs){
 async function poll(){
   try{
     view = await api('/api/exits');
+	fillMihomoTemplates();
+	$('#newnode').hidden = !canCreateNode();
     $('#panel').textContent = view.panel
       ? (backendName() + ': ' + view.panel)
       : (view.panel_info || '');
@@ -635,6 +663,7 @@ document.addEventListener('click', e => {
   if(e.target.closest('#newnode') || e.target.closest('#newnode2')){
     $('#nnhint').textContent = '';
     syncNodeForm();
+	fillMihomoTemplates();
     openModal('newnodebox');
   }
 });
@@ -678,6 +707,10 @@ $('#nsec').onchange = syncNodeForm;
 
 $('#ncreate').onclick = async e => {
   const q = new URLSearchParams({
+	template: $('#ntemplate').value,
+	mode: $('#nmode').value,
+	public_address: ($('#npublic').value || '').trim(),
+	public_port: ($('#npublicport').value || '').trim(),
     protocol: $('#nproto').value,
     network:  $('#nnet').value,
     security: $('#nsec').value,

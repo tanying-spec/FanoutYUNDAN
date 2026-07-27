@@ -50,13 +50,6 @@ func main() {
 	}
 
 	mgr := NewManager(*maxSlots, *workDir)
-	log.Printf("正在拉取节点列表...")
-	if n, err := mgr.RefreshNodes(); err != nil {
-		log.Printf("拉取失败（可在 Web 界面重试）: %v", err)
-	} else {
-		log.Printf("已获取 %d 个节点", n)
-	}
-
 	if n, err := mgr.restoreState(); err != nil {
 		log.Printf("恢复上次状态失败: %v", err)
 	} else if n > 0 {
@@ -64,6 +57,14 @@ func main() {
 	}
 
 	go mgr.WatchHealth()
+	go func() {
+		log.Printf("正在后台拉取节点列表...")
+		if n, err := mgr.RefreshNodes(); err != nil {
+			log.Printf("拉取失败（可在 Web 界面重试）: %v", err)
+		} else {
+			log.Printf("已获取 %d 个节点", n)
+		}
+	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -600,14 +601,18 @@ func apiInboundCreate(m *Manager) http.HandlerFunc {
 		q := r.URL.Query()
 		port, _ := strconv.Atoi(q.Get("port"))
 		ib, err := native.CreateInbound(NewInboundSpec{
-			Protocol: q.Get("protocol"),
-			Network:  q.Get("network"),
-			Port:     port,
-			Remark:   q.Get("remark"),
-			Path:     q.Get("path"),
-			Host:     q.Get("host"),
-			Security: q.Get("security"),
-			Vision:   q.Get("vision") == "1",
+			Template:      q.Get("template"),
+			PublicAddress: q.Get("public_address"),
+			PublicPort:    func() int { v, _ := strconv.Atoi(q.Get("public_port")); return v }(),
+			Mode:          q.Get("mode"),
+			Protocol:      q.Get("protocol"),
+			Network:       q.Get("network"),
+			Port:          port,
+			Remark:        q.Get("remark"),
+			Path:          q.Get("path"),
+			Host:          q.Get("host"),
+			Security:      q.Get("security"),
+			Vision:        q.Get("vision") == "1",
 
 			ServerName: q.Get("sni"),
 			CertFile:   q.Get("cert"),
