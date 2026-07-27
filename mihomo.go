@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/rand"
 	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -134,6 +135,58 @@ func loadMihomoState(path string) (mihomoState, error) {
 		return state, fmt.Errorf("不支持的 Mihomo 状态版本 %d", state.Version)
 	}
 	return state, nil
+}
+
+func loadOrMigrateMihomoState(path, configPath string, config map[string]any) (mihomoState, error) {
+	state, err := loadMihomoState(path)
+	if err != nil || len(state.Bindings) > 0 {
+		return state, err
+	}
+	legacyPath := filepath.Join(filepath.Dir(configPath), "fanout-bindings.db")
+	blob, err := os.ReadFile(legacyPath)
+	if os.IsNotExist(err) || len(strings.TrimSpace(string(blob))) == 0 {
+		return state, nil
+	}
+	if err != nil {
+		return state, fmt.Errorf("读取旧版 Mihomo fanout 绑定失败: %w", err)
+	}
+	templates := mihomoTemplates(configPath, config)
+	byName := map[string]mihomoTemplate{}
+	for _, template := range templates {
+		byName[template.Name] = template
+	}
+	for _, line := range strings.Split(string(blob), "\n") {
+		fields := strings.Split(line, "|")
+		if len(fields) < 4 {
+			continue
+		}
+		template, ok := byName[fields[1]]
+		if !ok {
+			continue
+		}
+		socksPort, _ := strconv.Atoi(fields[3])
+		if socksPort < 1 {
+			continue
+		}
+		created, _ := strconv.ParseInt(valueAt(fields, 4), 10, 64)
+		sum := sha256.Sum256([]byte(fields[0] + "|" + fields[2]))
+		binding := mihomoInbound{ID: hex.EncodeToString(sum[:6]), Name: fields[0], UUID: fields[2], Template: template.Name, Protocol: template.Protocol, Mode: template.Mode, SocksPort: socksPort, ListenerPort: template.ListenerPort, PublicAddress: template.PublicAddress, PublicPort: template.PublicPort, Host: template.Host, SNI: template.SNI, Path: template.Path, PublicKey: template.PublicKey, ShortID: template.ShortID, CreatedUnix: created}
+		binding.Link = bindingLink(binding)
+		state.Bindings = append(state.Bindings, binding)
+	}
+	if len(state.Bindings) > 0 {
+		if err := saveMihomoState(path, state); err != nil {
+			return state, fmt.Errorf("迁移旧版 Mihomo fanout 状态失败: %w", err)
+		}
+	}
+	return state, nil
+}
+
+func valueAt(values []string, index int) string {
+	if index >= 0 && index < len(values) {
+		return values[index]
+	}
+	return ""
 }
 
 func saveMihomoState(path string, state mihomoState) error {
@@ -343,6 +396,7 @@ func addBindingToConfig(config map[string]any, binding mihomoInbound) error {
 		for _, userRaw := range users {
 			user := anyMap(userRaw)
 			if stringValue(user["username"]) == binding.Name {
+				user["uuid"] = binding.UUID
 				found = true
 				break
 			}
@@ -358,20 +412,37 @@ func addBindingToConfig(config map[string]any, binding mihomoInbound) error {
 	}
 	proxies := anySlice(config["proxies"])
 	proxyName := outboundName(binding.ID)
+	legacyProxyName := "fanout-" + binding.Name
 	proxyFound := false
+	filteredProxies := make([]any, 0, len(proxies))
 	for _, raw := range proxies {
-		if stringValue(anyMap(raw)["name"]) == proxyName {
+		name := stringValue(anyMap(raw)["name"])
+		if name == legacyProxyName {
+			continue
+		}
+		filteredProxies = append(filteredProxies, raw)
+		if name == proxyName {
 			proxy := anyMap(raw)
 			proxy["server"], proxy["port"] = "127.0.0.1", binding.SocksPort
 			proxyFound = true
-			break
 		}
 	}
+	proxies = filteredProxies
 	if !proxyFound {
 		config["proxies"] = append(proxies, map[string]any{"name": proxyName, "type": "socks5", "server": "127.0.0.1", "port": binding.SocksPort, "udp": false})
+	} else {
+		config["proxies"] = proxies
 	}
 	rule := "IN-USER," + binding.Name + "," + proxyName
 	rules := anySlice(config["rules"])
+	filteredRules := make([]any, 0, len(rules))
+	for _, raw := range rules {
+		if strings.HasSuffix(stringValue(raw), ","+legacyProxyName) {
+			continue
+		}
+		filteredRules = append(filteredRules, raw)
+	}
+	rules = filteredRules
 	for _, raw := range rules {
 		if stringValue(raw) == rule {
 			return nil
@@ -396,16 +467,19 @@ func removeBindingFromConfig(config map[string]any, binding mihomoInbound) {
 		listener["users"] = users
 	}
 	proxyName := outboundName(binding.ID)
+	legacyProxyName := "fanout-" + binding.Name
 	var proxies []any
 	for _, raw := range anySlice(config["proxies"]) {
-		if stringValue(anyMap(raw)["name"]) != proxyName {
+		name := stringValue(anyMap(raw)["name"])
+		if name != proxyName && name != legacyProxyName {
 			proxies = append(proxies, raw)
 		}
 	}
 	config["proxies"] = proxies
 	var rules []any
 	for _, raw := range anySlice(config["rules"]) {
-		if !strings.HasSuffix(stringValue(raw), ","+proxyName) {
+		rule := stringValue(raw)
+		if !strings.HasSuffix(rule, ","+proxyName) && !strings.HasSuffix(rule, ","+legacyProxyName) {
 			rules = append(rules, raw)
 		}
 	}
@@ -490,7 +564,17 @@ func apiMihomoInbounds(m *Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m.mihomoMu.Lock()
 		defer m.mihomoMu.Unlock()
-		state, err := loadMihomoState(m.mihomoStatePath())
+		path, err := findMihomoConfig()
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		config, _, err := loadMihomoConfig(path)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		state, err := loadOrMigrateMihomoState(m.mihomoStatePath(), path, config)
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
@@ -593,7 +677,7 @@ func apiMihomoAdd(m *Manager) http.HandlerFunc {
 			writeJSON(w, 400, map[string]string{"error": "Reality 模式必须填写 SNI、公钥和 Short ID"})
 			return
 		}
-		state, err := loadMihomoState(m.mihomoStatePath())
+		state, err := loadOrMigrateMihomoState(m.mihomoStatePath(), path, config)
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
@@ -650,7 +734,17 @@ func apiMihomoBind(m *Manager) http.HandlerFunc {
 			writeJSON(w, 409, map[string]string{"error": "目标 SOCKS 端口不属于已连通的 Fanout 出口"})
 			return
 		}
-		state, err := loadMihomoState(m.mihomoStatePath())
+		path, err := findMihomoConfig()
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		config, previous, err := loadMihomoConfig(path)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		state, err := loadOrMigrateMihomoState(m.mihomoStatePath(), path, config)
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
@@ -664,16 +758,6 @@ func apiMihomoBind(m *Manager) http.HandlerFunc {
 		}
 		if index < 0 {
 			writeJSON(w, 404, map[string]string{"error": "未找到由 FanoutYUNDAN 管理的 Mihomo 入站"})
-			return
-		}
-		path, err := findMihomoConfig()
-		if err != nil {
-			writeJSON(w, 502, map[string]string{"error": err.Error()})
-			return
-		}
-		config, previous, err := loadMihomoConfig(path)
-		if err != nil {
-			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
 		}
 		state.Bindings[index].SocksPort = port
@@ -696,16 +780,16 @@ func apiMihomoBind(m *Manager) http.HandlerFunc {
 func (m *Manager) reconcileMihomo() error {
 	m.mihomoMu.Lock()
 	defer m.mihomoMu.Unlock()
-	state, err := loadMihomoState(m.mihomoStatePath())
-	if err != nil || len(state.Bindings) == 0 {
-		return err
-	}
 	path, err := findMihomoConfig()
 	if err != nil {
 		return err
 	}
 	config, previous, err := loadMihomoConfig(path)
 	if err != nil {
+		return err
+	}
+	state, err := loadOrMigrateMihomoState(m.mihomoStatePath(), path, config)
+	if err != nil || len(state.Bindings) == 0 {
 		return err
 	}
 	before, _ := yaml.Marshal(config)
@@ -729,12 +813,66 @@ func (m *Manager) WatchMihomo() {
 	}
 }
 
+func (m *Manager) cleanupMihomo(keepState bool) error {
+	m.mihomoMu.Lock()
+	defer m.mihomoMu.Unlock()
+	path, err := findMihomoConfig()
+	if err != nil {
+		// FanoutYUNDAN can be used without Mihomo. Missing Mihomo must not
+		// prevent a normal uninstall; there is no active config to clean.
+		if !keepState {
+			if removeErr := os.Remove(m.mihomoStatePath()); removeErr != nil && !os.IsNotExist(removeErr) {
+				return removeErr
+			}
+		}
+		return nil
+	}
+	config, previous, err := loadMihomoConfig(path)
+	if err != nil {
+		return err
+	}
+	state, err := loadOrMigrateMihomoState(m.mihomoStatePath(), path, config)
+	if err != nil {
+		return err
+	}
+	if len(state.Bindings) == 0 {
+		if !keepState {
+			if err := os.Remove(m.mihomoStatePath()); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, binding := range state.Bindings {
+		removeBindingFromConfig(config, binding)
+	}
+	if err := applyMihomoConfig(path, config, previous); err != nil {
+		return err
+	}
+	if !keepState {
+		if err := os.Remove(m.mihomoStatePath()); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func apiMihomoDelete(m *Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		m.mihomoMu.Lock()
 		defer m.mihomoMu.Unlock()
 		name := strings.TrimSpace(r.URL.Query().Get("name"))
-		state, err := loadMihomoState(m.mihomoStatePath())
+		path, err := findMihomoConfig()
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		config, previous, err := loadMihomoConfig(path)
+		if err != nil {
+			writeJSON(w, 502, map[string]string{"error": err.Error()})
+			return
+		}
+		state, err := loadOrMigrateMihomoState(m.mihomoStatePath(), path, config)
 		if err != nil {
 			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
@@ -748,16 +886,6 @@ func apiMihomoDelete(m *Manager) http.HandlerFunc {
 		}
 		if index < 0 {
 			writeJSON(w, 404, map[string]string{"error": "未找到由 FanoutYUNDAN 管理的 Mihomo 入站"})
-			return
-		}
-		path, err := findMihomoConfig()
-		if err != nil {
-			writeJSON(w, 502, map[string]string{"error": err.Error()})
-			return
-		}
-		config, previous, err := loadMihomoConfig(path)
-		if err != nil {
-			writeJSON(w, 502, map[string]string{"error": err.Error()})
 			return
 		}
 		removeBindingFromConfig(config, state.Bindings[index])

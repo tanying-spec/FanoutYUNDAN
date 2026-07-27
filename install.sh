@@ -40,11 +40,11 @@ validate_config() {
 
 install_deps() {
   if [ "$SYSTEM" = openrc ]; then
-    apk add --no-cache ca-certificates curl iproute2 iptables openvpn util-linux-misc >/dev/null
+    apk add --no-cache ca-certificates curl iproute2 iptables jq openvpn util-linux-misc >/dev/null
   else
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq ca-certificates curl iproute2 iptables openvpn util-linux >/dev/null
+    apt-get install -y -qq ca-certificates curl iproute2 iptables jq openvpn util-linux >/dev/null
   fi
   [ -c /dev/net/tun ] || die "当前 VPS 没有可用的 /dev/net/tun，请向服务商开启 TUN"
 }
@@ -74,22 +74,83 @@ service_cmd() {
   if command -v rc-service >/dev/null 2>&1; then rc-service fanout-yundan "$1"
   else systemctl "$1" fanout-yundan; fi
 }
-case "${1:-info}" in
+if [ "$#" -eq 0 ]; then
+  printf '%s\n' \
+    'FanoutYUNDAN 管理菜单' \
+    '1. 查看状态和管理地址' \
+    '2. 查看出口列表' \
+    '3. 启动服务' \
+    '4. 停止服务' \
+    '5. 重启服务' \
+    '6. 查看实时日志' \
+    '7. 修改管理端口' \
+    '8. 修改访问口令' \
+    '9. 修改访问路径' \
+    '10. 查看开机自启状态' \
+    '11. 更新' \
+    '12. 卸载'
+  printf '请选择 [1-12]：'
+  read -r choice
+  case "$choice" in
+    1) set -- info ;; 2) set -- list ;; 3) set -- start ;; 4) set -- stop ;;
+    5) set -- restart ;; 6) set -- log ;;
+    7) printf '新端口：'; read -r value; set -- port "$value" ;;
+    8) printf '新口令（至少 8 个字符）：'; read -r value; set -- passwd "$value" ;;
+    9) printf '新路径（6-48 个字母、数字、_、-）：'; read -r value; set -- path "$value" ;;
+    10) set -- autostart status ;; 11) set -- update ;; 12) set -- uninstall ;;
+    *) printf '无效选择。\n' >&2; exit 1 ;;
+  esac
+fi
+case "$1" in
   info)
     ip="$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || printf '<服务器IP>')"
     path="$(tr -d '[:space:]' < "$DIR/basepath" 2>/dev/null || true)"
     printf '管理页面：http://%s:%s/%s/\n' "$ip" "${WEB_PORT:-8899}" "$path"
     printf '访问口令：'; cat "$DIR/password" 2>/dev/null || true
-    command -v mh >/dev/null 2>&1 && printf 'Mihomo：已检测到，可在页面创建入站\n' || printf 'Mihomo：未安装，页面仅管理出口\n'
+    if command -v mihomo >/dev/null 2>&1 || [ -x /usr/local/bin/mihomo ] || [ -f /etc/mihomo/config.yaml ] || [ -f /etc/mihomo/config.yml ]; then
+      printf 'Mihomo：已检测到，可在页面创建入站\n'
+    else
+      printf 'Mihomo：未安装，页面仅管理出口\n'
+    fi
     ;;
   status|start|stop|restart) service_cmd "$1" ;;
+  list)
+    if [ -s "$DIR/state.json" ]; then
+      jq -r '.tunnels[]? | "槽位 \(.slot)  SOCKS=\(.port)  \(.country_code)  \(.hostname)"' "$DIR/state.json"
+    else printf '当前没有已保存的出口。\n'; fi
+    ;;
+  port)
+    port="${2:-}"
+    case "$port" in ''|*[!0-9]*) printf '端口必须是数字。\n' >&2; exit 1 ;; esac
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || { printf '端口必须在 1-65535 之间。\n' >&2; exit 1; }
+    curl -fsSL "https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh" | env FANOUT_YUNDAN_DIR="$DIR" FANOUT_YUNDAN_WEB_PORT="$port" sh
+    ;;
+  passwd)
+    value="${2:-}"
+    [ "${#value}" -ge 8 ] || { printf '口令至少需要 8 个字符。\n' >&2; exit 1; }
+    umask 077; printf '%s\n' "$value" > "$DIR/password"; service_cmd restart
+    ;;
+  path)
+    value="${2:-}"
+    case "$value" in ''|*[!A-Za-z0-9_-]*) printf '路径只能包含字母、数字、下划线和短横线。\n' >&2; exit 1 ;; esac
+    [ "${#value}" -ge 6 ] && [ "${#value}" -le 48 ] || { printf '路径长度必须为 6-48。\n' >&2; exit 1; }
+    umask 077; printf '%s\n' "$value" > "$DIR/basepath"; service_cmd restart
+    ;;
+  autostart)
+    value="${2:-status}"
+    if command -v rc-update >/dev/null 2>&1; then
+      case "$value" in on) rc-update add fanout-yundan default ;; off) rc-update del fanout-yundan default ;; status) rc-update show default | grep -q fanout-yundan && printf '开机自启：开启\n' || printf '开机自启：关闭\n' ;; *) exit 1 ;; esac
+    else
+      case "$value" in on) systemctl enable fanout-yundan ;; off) systemctl disable fanout-yundan ;; status) systemctl is-enabled fanout-yundan ;; *) exit 1 ;; esac
+    fi
+    ;;
   log)
     if command -v rc-service >/dev/null 2>&1; then tail -n 100 -f /var/log/fanout-yundan.log
     else journalctl -u fanout-yundan -n 100 -f; fi
     ;;
   update) curl -fsSL "https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh" | sh ;;
   uninstall) curl -fsSL "https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh" | sh -s -- uninstall ;;
-  *) printf '用法：fy [info|status|start|stop|restart|log|update|uninstall]\n' >&2; exit 1 ;;
+  *) printf '用法：fy [info|list|status|start|stop|restart|log|port|passwd|path|autostart|update|uninstall]\n' >&2; exit 1 ;;
 esac
 EOF
   chmod 0755 "$CLI"
@@ -154,6 +215,9 @@ wait_ready() {
 uninstall() {
   need_root; detect_system; validate_config
   [ "${FANOUT_YUNDAN_UNINSTALL_CONFIRM:-}" = DELETE ] || die "确认卸载请执行：FANOUT_YUNDAN_UNINSTALL_CONFIRM=DELETE fy uninstall"
+  keep_flag=""
+  [ "${FANOUT_YUNDAN_KEEP_DATA:-0}" != 1 ] || keep_flag="-keep-mihomo-state"
+  "$BIN" -dir "$WORK_DIR" -cleanup-mihomo $keep_flag >/dev/null 2>&1 || die "卸载停止：清理 Mihomo 受管入站失败"
   if [ "$SYSTEM" = openrc ]; then
     rc-service fanout-yundan stop >/dev/null 2>&1 || true
     rc-update del fanout-yundan default >/dev/null 2>&1 || true

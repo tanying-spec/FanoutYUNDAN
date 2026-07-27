@@ -28,6 +28,8 @@ func main() {
 		workDir   = flag.String("dir", "/var/lib/fanout-yundan", "工作目录")
 	)
 	showVersion := flag.Bool("version", false, "显示版本后退出")
+	cleanupMihomo := flag.Bool("cleanup-mihomo", false, "移除 FanoutYUNDAN 管理的 Mihomo 配置后退出")
+	keepMihomoState := flag.Bool("keep-mihomo-state", false, "清理 Mihomo 配置时保留 FanoutYUNDAN 绑定状态")
 	flag.Parse()
 
 	if *showVersion {
@@ -49,6 +51,13 @@ func main() {
 	}
 	if err := os.MkdirAll(*workDir, 0700); err != nil {
 		log.Fatalf("创建工作目录失败: %v", err)
+	}
+	if *cleanupMihomo {
+		mgr := NewManager(*maxSlots, *workDir, *socksBind)
+		if err := mgr.cleanupMihomo(*keepMihomoState); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 	if n := cleanupOrphanOpenVPN(*workDir); n > 0 {
 		log.Printf("已清理 %d 个 FanoutYUNDAN 遗留的 OpenVPN 进程", n)
