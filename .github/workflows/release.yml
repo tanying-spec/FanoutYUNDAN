@@ -42,7 +42,7 @@ jobs:
             checksums.txt
       - name: Upload workflow artifacts
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: fanout-yundan-linux
           path: |
