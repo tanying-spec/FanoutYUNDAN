@@ -5,9 +5,10 @@ REPO="${FANOUT_YUNDAN_REPO:-tanying-spec/FanoutYUNDAN}"
 BIN=/usr/local/bin/fanout-yundan
 CLI=/usr/local/bin/fy
 WORK_DIR="${FANOUT_YUNDAN_DIR:-/var/lib/fanout-yundan}"
-WEB_PORT="${FANOUT_YUNDAN_WEB_PORT:-8899}"
-WEB_BIND="${FANOUT_YUNDAN_WEB_BIND:-0.0.0.0}"
-MAX_SLOTS="${FANOUT_YUNDAN_MAX_SLOTS:-1}"
+[ ! -r "$WORK_DIR/install.env" ] || . "$WORK_DIR/install.env"
+WEB_PORT="${FANOUT_YUNDAN_WEB_PORT:-${WEB_PORT:-8899}}"
+WEB_BIND="${FANOUT_YUNDAN_WEB_BIND:-${WEB_BIND:-0.0.0.0}}"
+MAX_SLOTS="${FANOUT_YUNDAN_MAX_SLOTS:-${MAX_SLOTS:-1}}"
 ACTION="${1:-install}"
 
 say() { printf '%s\n' "$*"; }
@@ -42,8 +43,8 @@ download_binary() {
   asset="fanout-yundan-linux-${ARCH}"
   base="https://github.com/${REPO}/releases/latest/download"
   say "正在下载 FanoutYUNDAN (${ARCH})..."
-  curl -fL --retry 3 --connect-timeout 15 "${base}/${asset}" -o "$tmp/$asset" || die "下载程序失败"
-  curl -fL --retry 3 --connect-timeout 15 "${base}/checksums.txt" -o "$tmp/checksums.txt" || die "下载校验文件失败"
+  curl -fsSL --retry 3 --connect-timeout 15 "${base}/${asset}" -o "$tmp/$asset" || die "下载程序失败"
+  curl -fsSL --retry 3 --connect-timeout 15 "${base}/checksums.txt" -o "$tmp/checksums.txt" || die "下载校验文件失败"
   expected="$(awk -v f="$asset" '$2==f{print $1}' "$tmp/checksums.txt")"
   [ -n "$expected" ] || die "发布版本缺少 ${asset} 的校验值"
   actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
@@ -56,6 +57,7 @@ write_cli() {
 #!/bin/sh
 set -eu
 DIR="${FANOUT_YUNDAN_DIR:-/var/lib/fanout-yundan}"
+[ ! -r "$DIR/install.env" ] || . "$DIR/install.env"
 service_cmd() {
   if command -v rc-service >/dev/null 2>&1; then rc-service fanout-yundan "$1"
   else systemctl "$1" fanout-yundan; fi
@@ -64,7 +66,7 @@ case "${1:-info}" in
   info)
     ip="$(curl -fsS --max-time 8 https://api.ipify.org 2>/dev/null || printf '<服务器IP>')"
     path="$(tr -d '[:space:]' < "$DIR/basepath" 2>/dev/null || true)"
-    printf '管理页面：http://%s:%s/%s/\n' "$ip" "${FANOUT_YUNDAN_WEB_PORT:-8899}" "$path"
+    printf '管理页面：http://%s:%s/%s/\n' "$ip" "${WEB_PORT:-8899}" "$path"
     printf '访问口令：'; cat "$DIR/password" 2>/dev/null || true
     command -v mh >/dev/null 2>&1 && printf 'Mihomo：已检测到，可在页面创建入站\n' || printf 'Mihomo：未安装，页面仅管理出口\n'
     ;;
@@ -84,6 +86,12 @@ EOF
 write_service() {
   mkdir -p "$WORK_DIR"
   chmod 0700 "$WORK_DIR"
+  cat > "$WORK_DIR/install.env" <<EOF
+WEB_PORT=$WEB_PORT
+WEB_BIND=$WEB_BIND
+MAX_SLOTS=$MAX_SLOTS
+EOF
+  chmod 0600 "$WORK_DIR/install.env"
   if [ "$SYSTEM" = openrc ]; then
     cat > /etc/init.d/fanout-yundan <<EOF
 #!/sbin/openrc-run
