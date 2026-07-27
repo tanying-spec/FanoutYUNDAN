@@ -97,9 +97,11 @@ func main() {
 	mux.HandleFunc("/api/xui/clone", apiXUIClone(mgr))
 	mux.HandleFunc("/api/xui/detail", apiXUIDetail)
 	mux.HandleFunc("/api/xui/links", apiXUILinks)
-	mux.HandleFunc("/api/mihomo/inbounds", apiMihomoInbounds)
-	mux.HandleFunc("/api/mihomo/add", apiMihomoAdd)
-	mux.HandleFunc("/api/mihomo/delete", apiMihomoDelete)
+	mux.HandleFunc("/api/mihomo/status", apiMihomoStatus(mgr))
+	mux.HandleFunc("/api/mihomo/templates", apiMihomoTemplates(mgr))
+	mux.HandleFunc("/api/mihomo/inbounds", apiMihomoInbounds(mgr))
+	mux.HandleFunc("/api/mihomo/add", apiMihomoAdd(mgr))
+	mux.HandleFunc("/api/mihomo/delete", apiMihomoDelete(mgr))
 
 	auth, created, err := NewAuth(*workDir)
 	if err != nil {

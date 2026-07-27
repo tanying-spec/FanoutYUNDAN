@@ -12,6 +12,7 @@ import (
 // Manager 维护所有隧道，负责分配槽位与端口。
 type Manager struct {
 	mu        sync.RWMutex
+	mihomoMu  sync.Mutex
 	tunnels   map[int]*Tunnel
 	nodes     []Node
 	fetched   time.Time
