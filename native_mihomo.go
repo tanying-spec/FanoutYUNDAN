@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,8 +16,12 @@ import (
 const mihomoManagedPrefix = "fy-out-"
 
 type mihomoBackend struct {
-	bin        string
-	configPath string
+	bin           string
+	configPath    string
+	mu            sync.Mutex
+	templateMod   time.Time
+	templateSize  int64
+	templateCache []MihomoTemplate
 }
 
 type MihomoTemplate struct {
@@ -27,6 +33,15 @@ type MihomoTemplate struct {
 }
 
 func (m *mihomoBackend) templates() ([]MihomoTemplate, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st, err := os.Stat(m.configPath)
+	if err != nil {
+		return nil, err
+	}
+	if st.ModTime().Equal(m.templateMod) && st.Size() == m.templateSize && m.templateCache != nil {
+		return append([]MihomoTemplate(nil), m.templateCache...), nil
+	}
 	blob, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return nil, err
@@ -48,6 +63,8 @@ func (m *mihomoBackend) templates() ([]MihomoTemplate, error) {
 		}
 		out = append(out, MihomoTemplate{Name: fmt.Sprint(l["name"]), Port: yamlInt(l["port"]), Network: network, Path: path, Listen: fmt.Sprint(l["listen"])})
 	}
+	m.templateMod, m.templateSize = st.ModTime(), st.Size()
+	m.templateCache = append([]MihomoTemplate(nil), out...)
 	return out, nil
 }
 
@@ -80,6 +97,8 @@ func findMihomo() (*mihomoBackend, error) {
 }
 
 func (m *mihomoBackend) apply(inbounds []*nativeInbound, tunnels []*Tunnel) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	original, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return fmt.Errorf("读取 Mihomo 配置失败: %w", err)

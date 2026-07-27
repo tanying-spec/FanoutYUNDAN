@@ -405,11 +405,18 @@ const ICON = {
 };
 
 // 界面挂在随机前缀下，请求一律走相对路径
+let mutations = 0;
 async function api(path, opts){
-  const r = await fetch(path.replace(/^\//, ''), opts);
-  const d = await r.json().catch(()=>({}));
-  if(!r.ok) throw new Error(d.error || ('HTTP '+r.status));
-  return d;
+  const writing = opts && opts.method && opts.method !== 'GET';
+  if(writing) mutations++;
+  try{
+    const r = await fetch(path.replace(/^\//, ''), opts);
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error || ('HTTP '+r.status));
+    return d;
+  }finally{
+    if(writing) mutations--;
+  }
 }
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -552,18 +559,34 @@ function renderJobs(jobs){
   }).join('');
 }
 
-async function poll(){
+let pollBusy = false, lastViewJSON = '', lastJobsJSON = '';
+function editing(){
+  return mutations > 0 || !!document.querySelector('.modal.open');
+}
+async function poll(force){
+  if(pollBusy || (document.hidden && !force)) return;
+  pollBusy = true;
   try{
-    view = await api('/api/exits');
-	fillMihomoTemplates();
-	$('#newnode').hidden = !canCreateNode();
-    $('#panel').textContent = view.panel
-      ? (backendName() + ': ' + view.panel)
-      : (view.panel_info || '');
-    renderExits();
-    renderOrphans();
+    const next = await api('/api/exits');
+    const json = JSON.stringify(next);
+    view = next;
+    if((force || !editing()) && json !== lastViewJSON){
+      lastViewJSON = json;
+      fillMihomoTemplates();
+      $('#newnode').hidden = !canCreateNode();
+      $('#panel').textContent = view.panel
+        ? (backendName() + ': ' + view.panel)
+        : (view.panel_info || '');
+      renderExits();
+      renderOrphans();
+    }
   }catch(e){}
-  try{ renderJobs(await api('/api/jobs') || []); }catch(e){}
+  try{
+    const jobs = await api('/api/jobs') || [];
+    const json = JSON.stringify(jobs);
+    if(json !== lastJobsJSON){ lastJobsJSON = json; renderJobs(jobs); }
+  }catch(e){}
+  pollBusy = false;
 }
 
 // ---- 新建向导 ----
@@ -979,8 +1002,9 @@ $('#exportAll').onclick = async () => {
 };
 $('#copyall').onclick = () => { const v = $('#exbox').value; if(v) copy(v); };
 
-poll();
-setInterval(poll, 3000);
+poll(true);
+setInterval(poll, 5000);
+document.addEventListener('visibilitychange', () => { if(!document.hidden) poll(true); });
 </script>
 </body>
 </html>`
