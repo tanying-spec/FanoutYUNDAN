@@ -296,6 +296,12 @@ func (m *Manager) Stop(slot int) error {
 // 与健康检查的自动重连不同：那边优先重连原节点（目标是恢复），
 // 这里用户是嫌当前出口 IP 不好用，必须真的换一个。
 func (m *Manager) Swap(slot int) error {
+	return m.SwapTo(slot, "")
+}
+
+// SwapTo switches an existing tunnel to a user-selected VPN Gate node. An
+// empty hostname keeps the old speed-first automatic selection behaviour.
+func (m *Manager) SwapTo(slot int, hostname string) error {
 	m.mu.RLock()
 	t, ok := m.tunnels[slot]
 	m.mu.RUnlock()
@@ -307,16 +313,41 @@ func (m *Manager) Swap(slot int) error {
 		return fmt.Errorf("这个出口正在连接中，稍等一下")
 	}
 
-	// pickNodes 已排除所有在用节点，拿到的必然不是当前这个
-	picks, err := m.pickNodes(snap.Node.CountryCode, 1)
-	if err != nil {
-		return err
+	var target Node
+	if hostname == "" {
+		// pickNodes 已排除所有在用节点，拿到的必然不是当前这个
+		picks, err := m.pickNodes(snap.Node.CountryCode, 1)
+		if err != nil {
+			return err
+		}
+		target = picks[0]
+	} else {
+		m.mu.RLock()
+		for _, candidate := range m.nodes {
+			if candidate.HostName == hostname {
+				target = candidate
+				break
+			}
+		}
+		for otherSlot, other := range m.tunnels {
+			if otherSlot != slot && other.snapshot().Node.HostName == hostname {
+				m.mu.RUnlock()
+				return fmt.Errorf("节点 %s 已被另一个出口使用", hostname)
+			}
+		}
+		m.mu.RUnlock()
+		if target.HostName == "" {
+			return fmt.Errorf("节点 %s 不存在，可能列表已刷新", hostname)
+		}
+		if target.HostName == snap.Node.HostName {
+			return fmt.Errorf("当前出口已经在使用这个节点")
+		}
 	}
 	oldHost := snap.Node.HostName
 	if !t.beginReconnect() {
 		return fmt.Errorf("这个出口正在执行其他操作")
 	}
-	t.setNode(picks[0])
+	t.setNode(target)
 	m.reconnectStarted(t, oldHost)
 	return nil
 }

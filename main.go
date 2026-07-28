@@ -183,9 +183,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func apiNodes(m *Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nodes, fetched := m.Nodes()
-		if len(nodes) > 200 {
-			nodes = nodes[:200]
-		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"nodes":   nodes,
 			"fetched": fetched,
@@ -256,7 +253,7 @@ func apiSwap(m *Manager) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "slot 参数无效"})
 			return
 		}
-		if err := m.Swap(slot); err != nil {
+		if err := m.SwapTo(slot, r.URL.Query().Get("host")); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}

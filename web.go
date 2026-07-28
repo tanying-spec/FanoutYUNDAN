@@ -172,6 +172,18 @@ textarea:focus{outline:none;border-color:var(--accent)}
   transition:opacity .18s}
 .toast.show{opacity:1}
 .toast.bad{border-color:rgba(194,84,80,.5);color:var(--bad)}
+.nodebar{display:grid;grid-template-columns:1fr 150px 150px auto;gap:8px;margin-bottom:10px}
+.nodelist{border:1px solid var(--line);border-radius:4px;overflow:auto;max-height:52vh}
+.nrow{display:grid;grid-template-columns:minmax(150px,1.3fr) 90px 90px 110px 76px;
+  gap:10px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line)}
+.nrow:last-child{border-bottom:0}.nrow.head{position:sticky;top:0;background:var(--panel);
+  color:var(--dim);font-size:11px;z-index:1}.nmain b{display:block;font-size:12px}.nmain em{display:block;
+  color:var(--dim);font-style:normal;font-size:11px;overflow:hidden;text-overflow:ellipsis}
+.metric{font-variant-numeric:tabular-nums}.metric small{color:var(--dim)}
+.nodehint{color:var(--dim);font-size:11px;margin-top:8px}
+@media(max-width:680px){.nodebar{grid-template-columns:1fr 1fr}.nodebar input{grid-column:1/-1}
+  .nrow{grid-template-columns:minmax(125px,1fr) 70px 74px}.nrow>:nth-child(4){display:none}
+  .nrow>:last-child{grid-column:3}.nrow.head>:last-child{grid-column:auto}}
 </style>
 </head>
 <body>
@@ -366,6 +378,32 @@ textarea:focus{outline:none;border-color:var(--accent)}
       </button>
     </div>
     <div class="body" id="dbody"></div>
+  </div>
+</div>
+
+<div class="modal" id="swapbox">
+  <div class="sheet" style="width:min(860px,100%)">
+    <div class="head">
+      <h2>选择新的 VPN Gate 节点</h2>
+      <span class="count" id="swapcount"></span>
+      <span class="spacer"></span>
+      <button id="refreshnodes">刷新列表</button>
+      <button class="icon" data-close="swapbox" title="关闭"><svg viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+    </div>
+    <div class="body">
+      <div class="nodebar">
+        <input type="search" id="nodefilter" placeholder="搜索国家、主机名或 IP">
+        <select id="nodecountry"><option value="">全部国家</option></select>
+        <select id="nodesort">
+          <option value="speed">速度从高到低</option>
+          <option value="ping">延迟从低到高</option>
+          <option value="sessions">在线人数从少到多</option>
+          <option value="country">按国家排列</option>
+        </select>
+      </div>
+      <div class="nodelist" id="nodelist"><div class="empty">正在读取节点…</div></div>
+      <div class="nodehint">延迟、在线人数和线路速度来自 VPN Gate 公布数据，仅用于筛选，不代表 VPS 到节点的实时测速结果。</div>
+    </div>
   </div>
 </div>
 
@@ -784,6 +822,78 @@ $('#go').onclick = async e => {
   e.target.disabled = false;
 };
 
+// ---- 指定节点切换 ----
+let swapSlot = 0, swapNodes = [], swapFetched = '';
+
+function renderSwapNodes(){
+  const kw = ($('#nodefilter').value || '').trim().toLowerCase();
+  const country = $('#nodecountry').value;
+  const sort = $('#nodesort').value;
+  const current = view.exits.find(e => e.slot === swapSlot);
+  const used = new Set(view.exits.map(e => e.host));
+  const list = swapNodes.filter(n => (!country || n.country_code === country)
+    && (!kw || [n.country, n.country_code, n.hostname, n.ip]
+      .some(x => String(x || '').toLowerCase().includes(kw))));
+  list.sort((a, b) => {
+    if(sort === 'ping') return (a.ping || 999999) - (b.ping || 999999) || b.speed_mbps - a.speed_mbps;
+    if(sort === 'sessions') return a.sessions - b.sessions || b.speed_mbps - a.speed_mbps;
+    if(sort === 'country') return String(a.country_code).localeCompare(String(b.country_code)) || b.speed_mbps - a.speed_mbps;
+    return b.speed_mbps - a.speed_mbps || (a.ping || 999999) - (b.ping || 999999);
+  });
+  $('#swapcount').textContent = list.length + ' / ' + swapNodes.length + ' 个';
+  const head = '<div class="nrow head"><span>节点</span><span>延迟</span><span>在线人数</span><span>线路速度</span><span>操作</span></div>';
+  $('#nodelist').innerHTML = head + (list.length ? list.map(n => {
+    const isCurrent = current && current.host === n.hostname;
+    const unavailable = used.has(n.hostname) && !isCurrent;
+    const disabled = isCurrent || unavailable;
+    const label = isCurrent ? '当前' : (unavailable ? '使用中' : '切换');
+    return '<div class="nrow">'
+      + '<span class="nmain"><b>' + esc(n.country_code + ' ' + n.country) + '</b><em>'
+      + esc(n.hostname + ' · ' + n.ip) + '</em></span>'
+      + '<span class="metric">' + (n.ping > 0 ? n.ping + ' <small>ms</small>' : '—') + '</span>'
+      + '<span class="metric">' + n.sessions + ' <small>人</small></span>'
+      + '<span class="metric">' + Number(n.speed_mbps || 0).toFixed(0) + ' <small>Mbps</small></span>'
+      + '<button data-picknode="' + esc(n.hostname) + '"' + (disabled ? ' disabled' : '') + '>' + label + '</button>'
+      + '</div>';
+  }).join('') : '<div class="empty">没有符合条件的节点</div>');
+}
+
+async function loadSwapNodes(refresh){
+  $('#nodelist').innerHTML = '<div class="empty">正在读取节点…</div>';
+  try{
+    if(refresh) await api('/api/refresh', {method:'POST'});
+    const result = await api('/api/nodes');
+    swapNodes = result.nodes || [];
+    swapFetched = result.fetched || '';
+    const countries = [...new Map(swapNodes.map(n => [n.country_code,
+      n.country_code + ' ' + n.country])).entries()].sort((a,b) => a[1].localeCompare(b[1]));
+    const old = $('#nodecountry').value;
+    $('#nodecountry').innerHTML = '<option value="">全部国家</option>'
+      + countries.map(x => '<option value="' + esc(x[0]) + '">' + esc(x[1]) + '</option>').join('');
+    $('#nodecountry').value = old;
+    renderSwapNodes();
+  }catch(err){
+    $('#nodelist').innerHTML = '<div class="empty">读取失败：' + esc(err.message) + '</div>';
+  }
+}
+
+function openSwap(slot){
+  swapSlot = Number(slot);
+  $('#nodefilter').value = '';
+  $('#nodecountry').value = '';
+  openModal('swapbox');
+  loadSwapNodes(false);
+}
+
+$('#nodefilter').oninput = renderSwapNodes;
+$('#nodecountry').onchange = renderSwapNodes;
+$('#nodesort').onchange = renderSwapNodes;
+$('#refreshnodes').onclick = async e => {
+  e.target.disabled = true;
+  await loadSwapNodes(true);
+  e.target.disabled = false;
+};
+
 // ---- 出口操作 ----
 document.addEventListener('click', async e => {
   const stop = e.target.closest('[data-stop]');
@@ -796,12 +906,18 @@ document.addEventListener('click', async e => {
   }
   const swap = e.target.closest('[data-swap]');
   if(swap){
-    swap.disabled = true;
+    openSwap(swap.dataset.swap);
+    return;
+  }
+  const pick = e.target.closest('[data-picknode]');
+  if(pick){
+    pick.disabled = true;
     try{
-      await api('/api/swap?slot=' + swap.dataset.swap, {method:'POST'});
-      toast('正在换节点');
-    }catch(err){ toast(err.message, true); }
-    poll();
+      await api('/api/swap?slot=' + swapSlot + '&host=' + encodeURIComponent(pick.dataset.picknode), {method:'POST'});
+      toast('正在切换到 ' + pick.dataset.picknode);
+      closeModal('swapbox');
+      poll(true);
+    }catch(err){ toast(err.message, true); pick.disabled = false; }
     return;
   }
   const job = e.target.closest('[data-job]');
