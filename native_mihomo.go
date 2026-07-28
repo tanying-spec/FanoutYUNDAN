@@ -164,9 +164,12 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 		}
 	}
 	managedUsers := map[string]bool{}
+	legacyManagedProxies := map[string]bool{}
 	for _, ib := range inbounds {
 		for i := range ib.Clients {
-			managedUsers[ib.clientUsername(i, &ib.Clients[i])] = true
+			username := ib.clientUsername(i, &ib.Clients[i])
+			managedUsers[username] = true
+			legacyManagedProxies["fanout-"+username] = true
 		}
 	}
 
@@ -175,6 +178,9 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 	for _, raw := range listeners {
 		listener, ok := raw.(map[string]any)
 		if !ok {
+			continue
+		}
+		if strings.ToLower(fmt.Sprint(listener["type"])) != "vless" {
 			continue
 		}
 		name, _ := listener["name"].(string)
@@ -219,7 +225,7 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 	cleanProxies := proxies[:0]
 	for _, p := range proxies {
 		pm, ok := p.(map[string]any)
-		if ok && strings.HasPrefix(fmt.Sprint(pm["name"]), mihomoManagedPrefix) {
+		if ok && (strings.HasPrefix(fmt.Sprint(pm["name"]), mihomoManagedPrefix) || legacyManagedProxies[fmt.Sprint(pm["name"])]) {
 			continue
 		}
 		cleanProxies = append(cleanProxies, p)

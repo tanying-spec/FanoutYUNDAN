@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // nativeClient 是一个可连接的客户端凭据。
@@ -120,7 +123,11 @@ func nativeStatePath(dir string) string { return filepath.Join(dir, "native.json
 func loadNativeStore(dir string) (*nativeStore, error) {
 	blob, err := os.ReadFile(nativeStatePath(dir))
 	if os.IsNotExist(err) {
-		return migrateLegacyMihomoStore(dir)
+		st, migrateErr := migrateLegacyMihomoStore(dir)
+		if migrateErr == nil && len(st.Inbounds) > 0 {
+			migrateErr = st.save(dir)
+		}
+		return st, migrateErr
 	}
 	if err != nil {
 		return nil, err
@@ -171,7 +178,7 @@ func migrateLegacyMihomoStore(dir string) (*nativeStore, error) {
 	st := &nativeStore{NextID: 1}
 	blob, err := os.ReadFile(filepath.Join(dir, "mihomo-inbounds.json"))
 	if os.IsNotExist(err) {
-		return st, nil
+		return migrateLegacyPipeBindings(dir)
 	}
 	if err != nil {
 		return nil, err
@@ -230,6 +237,106 @@ func securityForMode(mode string) string {
 		return "tls"
 	}
 	return "none"
+}
+
+// migrateLegacyPipeBindings imports the original mh fanout database. That
+// integration stored one pipe-delimited record per Mihomo user.
+func migrateLegacyPipeBindings(dir string) (*nativeStore, error) {
+	st := &nativeStore{NextID: 1}
+	bindingsPath := os.Getenv("FANOUT_YUNDAN_LEGACY_BINDINGS")
+	if bindingsPath == "" {
+		bindingsPath = "/etc/mihomo/fanout-bindings.db"
+	}
+	blob, err := os.ReadFile(bindingsPath)
+	if os.IsNotExist(err) {
+		return st, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("读取旧 fanout 绑定失败: %w", err)
+	}
+
+	configPath := os.Getenv("MIHOMO_CONFIG")
+	if configPath == "" {
+		for _, candidate := range []string{"/etc/mihomo/config.yaml", "/etc/mihomo/config.yml", "/root/.config/mihomo/config.yaml"} {
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				configPath = candidate
+				break
+			}
+		}
+	}
+	if configPath == "" {
+		return nil, fmt.Errorf("迁移旧 fanout 绑定时找不到 Mihomo 配置")
+	}
+	configBlob, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("读取 Mihomo 配置失败: %w", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(configBlob, &cfg); err != nil {
+		return nil, fmt.Errorf("解析 Mihomo 配置失败: %w", err)
+	}
+
+	listeners := map[string]map[string]any{}
+	listenerList, _ := cfg["listeners"].([]any)
+	for _, raw := range listenerList {
+		if listener, ok := raw.(map[string]any); ok {
+			listeners[fmt.Sprint(listener["name"])] = listener
+		}
+	}
+	portsToHost := persistedPortsToHosts(dir)
+	for _, line := range strings.Split(string(blob), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 4 {
+			return nil, fmt.Errorf("旧 fanout 绑定格式无效: %q", line)
+		}
+		socksPort, parseErr := strconv.Atoi(parts[3])
+		if parseErr != nil {
+			return nil, fmt.Errorf("旧 fanout SOCKS 端口无效: %q", parts[3])
+		}
+		name, template, uuid := parts[0], parts[1], parts[2]
+		listener := listeners[template]
+		if listener == nil {
+			return nil, fmt.Errorf("旧 fanout 模板 %q 在 Mihomo 中不存在", template)
+		}
+		network, path := "tcp", ""
+		if wsPath := strings.TrimSpace(fmt.Sprint(listener["ws-path"])); wsPath != "" && wsPath != "<nil>" {
+			network, path = "ws", wsPath
+		}
+		listenerPort := yamlInt(listener["port"])
+		st.Inbounds = append(st.Inbounds, &nativeInbound{
+			ID: st.NextID, StableID: randomHex(6), Port: listenerPort,
+			Template: template, ListenerPort: listenerPort, PublicPort: listenerPort,
+			Protocol: "vless", Network: network, Path: path, Security: "none",
+			Remark: name, Enable: true, BoundTo: portsToHost[socksPort],
+			Clients: []nativeClient{{Email: name, Username: name, ID: uuid, Enable: true}},
+		})
+		st.NextID++
+	}
+	return st, nil
+}
+
+func persistedPortsToHosts(dir string) map[int]string {
+	out := map[int]string{}
+	stateBlob, err := os.ReadFile(filepath.Join(dir, "state.json"))
+	if err != nil {
+		return out
+	}
+	var state struct {
+		Tunnels []struct {
+			Port     int    `json:"port"`
+			HostName string `json:"hostname"`
+		} `json:"tunnels"`
+	}
+	if json.Unmarshal(stateBlob, &state) == nil {
+		for _, tunnel := range state.Tunnels {
+			out[tunnel.Port] = sanitizeTag(tunnel.HostName)
+		}
+	}
+	return out
 }
 
 func (s *nativeStore) save(dir string) error {

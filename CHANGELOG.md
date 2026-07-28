@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.1.1 - 2026-07-28
+
+- 修复旧 `mh fanout` 的 `/etc/mihomo/fanout-bindings.db` 未迁移，导致安装后节点列表为空。
+- 迁移时保留旧节点名称、UUID、Mihomo listener、WS Path 和已有出口绑定。
+- 修复合并 VLESS 用户时误改 Hysteria2、AnyTLS 等非 VLESS listener 的 `users` 配置。
+- 首次接管后自动把旧 `fanout-*` 出站和规则替换为 FanoutYUNDAN 的 `fy-out-*` 管理项。
+
 ## v2.1.0 - 2026-07-27
 
 - 基于最新版原版 Fanout 恢复完整界面、VPN Gate 切换与健康检查工作流。
