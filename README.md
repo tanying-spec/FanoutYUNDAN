@@ -1,89 +1,112 @@
 # FanoutYUNDAN
 
-FanoutYUNDAN 在一台 VPS 上运行多个独立的 VPN Gate 出口，并直接把选中的出口接入 Mihomo 入站。切换日本、美国或其他出口时，Mihomo 节点的 UUID、端口和分享链接保持不变。
+FanoutYUNDAN 把一台 VPS 上的多个 VPN Gate 出口接入现有 Mihomo 入站。你可以让原来的 VLESS WS 节点改走日本、美国或其他地区的出口，不需要安装 3x-ui。
 
-它不需要 3x-ui，也不依赖 `mh fanout`。Mihomo-lite-argo 只是可选的 Mihomo 安装来源，不是运行依赖。
+它最适合这类自用场景：**Mihomo 已经有可用的 VLESS WS 节点，并通过 Cloudflare CDN（小黄云）对外提供 WS-TLS 连接。**
+
+切换或自动更换 VPN Gate 节点时，UUID、域名、公网端口、Host、SNI 和 WS Path 保持不变，客户端不需要删除重建。分享链接 `#` 后面的节点名称可能随出口 IP 更新，这不会影响连接。
+
+## 使用前准备
+
+- 一台 AMD64 或 ARM64 VPS
+- Alpine 3.20+、Debian 12+ 或 Ubuntu 22.04+
+- `root` 权限
+- 可用的 `/dev/net/tun`
+- 已安装并能正常启动的 Mihomo
+- Mihomo 配置中至少有一个 VLESS WS listener
+
+FanoutYUNDAN 只转发 TCP。VPN Gate 是志愿者网络，出口可能离线、满员或速度波动，不适合要求固定 IP 或稳定带宽的业务。
 
 ## 一键安装
 
-用 `root` 登录 VPS 后执行：
+使用 `root` 登录 VPS，直接执行，不需要 `sudo`：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tanying-spec/FanoutYUNDAN/main/install.sh | sh
 ```
 
-支持 Alpine 3.20+、Debian 12+、Ubuntu 22.04+，以及 AMD64、ARM64。VPS 必须提供 `/dev/net/tun`。
+安装器只有在管理接口、已保存出口和 Mihomo 同步都就绪后才会报告成功。完成后会显示管理地址和随机口令，以后输入 `fy` 即可打开中文管理菜单。
 
-安装结束会直接显示管理地址和访问口令。以后输入：
+## 接管现有 WS-CDN 节点
 
-```sh
-fy
-```
+1. 先确认原来的 Mihomo VLESS WS-CDN 节点可以正常连接。
+2. 打开安装器显示的管理页面并登录。
+3. 添加一个国家或指定的 VPN Gate 出口，等待状态变为“正常”。
+4. 在“未绑定出口的入站”中找到原来的 Mihomo 入站，选择刚添加的出口。
+5. 复制页面生成的链接进行测试，并访问 IP 检测网站确认流量已经从所选 VPN Gate IP 出口。
 
-即可打开中文管理菜单。
+也可以选择多个已连通出口，使用同一个 Mihomo listener 模板批量生成节点。每个出口拥有独立 SOCKS5 端口和绑定关系，互不影响。
 
-## 创建节点
+当前版本只显示能够完整、安全重建客户端链接的 Mihomo VLESS TCP/WS listener。Reality、gRPC、HTTPUpgrade、XHTTP，以及带 TLS 私钥的 listener 不会作为模板显示，避免生成看似正常但实际不可用的链接。
 
-1. 打开安装器显示的管理页面并登录。
-2. 点击“添加节点”，选择国家或具体 VPN Gate 节点。
-3. 出口连通后，在左侧勾选一个或多个出口。
-4. 点击“从选中出口创建”，选择 Mihomo 入口模板和入口模式。
-5. 在右侧复制节点链接，导入 Clash Meta、Mihomo Party 或其他 VLESS 客户端。
+## Cloudflare 和端口怎么填
 
-右侧下拉框可以随时切换出口。FanoutYUNDAN 只修改自己创建的用户、SOCKS5 出站和 `IN-USER` 规则，不会重建原有 listener。
+使用 Cloudflare CDN WS-TLS 时：
 
-## 入口模式
+- **公网地址**：客户端实际连接的 Cloudflare 域名，例如 `node.example.com`
+- **公网端口**：通常是 `443`
+- **Host / SNI**：通常与 Cloudflare 域名相同
+- **WS Path**：必须与 Mihomo listener 中的 `ws-path` 一致
+- **Mihomo 监听端口**：VPS 内部 listener 使用的端口
 
-| 模式 | 适用情况 | 需要填写 |
-| --- | --- | --- |
-| 直连 WS | 客户端直接连接 VPS 或 NAT 映射端口 | 公网 IP/域名、公网端口、WS Path |
-| Cloudflare CDN WS-TLS | 域名开启 Cloudflare 代理 | CDN 域名、443、Host、SNI、WS Path |
-| Cloudflare Argo WS-TLS | 已有 Cloudflare Tunnel 域名 | Tunnel 域名、443、Host、SNI、WS Path |
-| VLESS Reality | Mihomo 已存在 Reality listener | 公网地址、端口、SNI、公钥、Short ID |
+公网端口不必等于 Mihomo 监听端口。例如 NAT 把公网 `43954` 映射到内部 listener 端口时，分享链接应填写 `43954`；使用 Cloudflare CDN 时，客户端通常连接 `443`，再由 Cloudflare 回源到 Mihomo。
 
-公网端口可以与 Mihomo 内部监听端口不同，适合 NAT 端口映射。CDN 和 Argo 模式必须填写浏览器实际访问的域名，不能填写 VPS 内网地址。
+FanoutYUNDAN 不会替你创建 Cloudflare DNS、CDN 回源规则或端口映射。接管前原节点必须已经能够正常到达 Mihomo listener。
+
+## 状态说明
+
+- **正常（up）**：VPN、固定 SOCKS5 端口和 Mihomo 配置同步全部成功
+- **节点同步失败（sync_failed）**：VPN 已连接，但 Mihomo 配置未成功同步；程序会继续重试
+- **失败 / 已停止**：VPN 没有形成可用出口
+- **未绑定出口**：该入站当前走 Mihomo 原来的直连出口
+
+程序使用三个独立的公网 IP 检测源验证真实出口。检测服务自身暂时不可用时不会误切 VPN；确认出口失效后，会优先自动选择同地区节点。即使程序重启时原节点失效，也会把已有入站迁移到替代节点。
+
+SOCKS5 端口在切换和自动恢复时保持不变，除非该端口已被其他程序占用。域名连接会在对应的网络隔离环境内完成解析，不会绕回母机出口。
 
 ## Mihomo 配置
 
-程序自动寻找以下配置：
+程序会自动寻找：
 
 ```text
 /etc/mihomo/config.yaml
 /etc/mihomo/config.yml
-/usr/local/etc/mihomo/config.yaml
 /root/.config/mihomo/config.yaml
+/root/.config/mihomo/config.yml
 ```
 
-其他位置可在服务环境中设置：
+配置位于其他位置时，在服务环境中设置：
 
 ```sh
-FANOUT_YUNDAN_MIHOMO_CONFIG=/path/to/config.yaml
+MIHOMO_CONFIG=/path/to/config.yaml
 ```
 
-每次写入前都会用 Mihomo 自检临时配置，并备份为 `config.yaml.fanout-yundan.previous`。验证或重启失败会恢复原文件。程序每分钟对账一次，受管配置被其他工具覆盖后会自动补回。
-
-旧版 `/etc/mihomo/fanout-bindings.db` 会在首次读取时自动迁移到：
+FanoutYUNDAN 只管理自己添加的 Mihomo 用户、SOCKS5 出站和 `IN-USER` 路由规则，不会重建原有 listener。每次修改前会执行 Mihomo 配置检查，备份文件为：
 
 ```text
-/var/lib/fanout-yundan/mihomo-inbounds.json
+config.yaml.fanout-yundan.bak
 ```
+
+写入会保留原配置的权限和所有者。验证或重启失败时，程序会原子恢复原文件并再次启动 Mihomo。
+
+运行状态保存在 `/var/lib/fanout-yundan/native.json`。旧版 `mihomo-inbounds.json` 和 `/etc/mihomo/fanout-bindings.db` 会在首次启动时自动迁移，不需要手工修改。
 
 ## 常用命令
 
 ```sh
 fy info                 # 状态、版本、管理地址和口令
-fy list                 # 已保存的出口和 SOCKS5 端口
-fy start|stop|restart   # 管理服务
-fy log                  # 实时日志
+fy list                 # 已保存出口和固定 SOCKS5 端口
+fy start|stop|restart   # 启停或重启服务
+fy log                  # 查看实时日志
 fy port 18899           # 修改管理端口
-fy passwd 新口令       # 修改口令；留空随机生成
-fy path new-path        # 修改路径；留空随机生成
+fy passwd 新口令       # 修改口令；留空则随机生成
+fy path new-path        # 修改管理路径；留空则随机生成
 fy autostart on|off     # 开关开机自启
-fy update               # 更新
+fy update               # 更新到最新版
 fy uninstall            # 显示卸载确认方式
 ```
 
-SOCKS5 默认只监听 `127.0.0.1`，供同机 Mihomo 使用，不会把无认证代理暴露到公网。
+SOCKS5 默认只监听 `127.0.0.1`，不会把无认证代理暴露到公网。管理操作只接受同源 POST 请求，登录具有频率限制；管理页面默认仍是 HTTP，公网长期使用建议增加 HTTPS 反向代理或 Cloudflare Tunnel。
 
 确认卸载：
 
@@ -97,22 +120,42 @@ FANOUT_YUNDAN_UNINSTALL_CONFIRM=DELETE fy uninstall
 FANOUT_YUNDAN_KEEP_DATA=1 FANOUT_YUNDAN_UNINSTALL_CONFIRM=DELETE fy uninstall
 ```
 
-卸载会先撤销 FanoutYUNDAN 管理的 Mihomo 用户、代理和规则，但不会删除 Mihomo、Cloudflare Tunnel 或其他节点。
+正常卸载会先撤销 FanoutYUNDAN 管理的 Mihomo 配置，但不会删除 Mihomo、Cloudflare Tunnel 或其他节点。
+
+## 常见问题
+
+### 管理页面打不开
+
+先执行 `fy info` 确认当前端口和随机路径，再检查 VPS 防火墙、服务商防火墙及 NAT 端口映射。修改管理端口后，应以 `fy info` 显示的新地址为准。
+
+### 页面没有 Mihomo 入站模板
+
+确认 Mihomo 配置中存在 VLESS TCP 或 WS listener，配置路径能被程序找到，并执行 `fy restart`。Reality、gRPC、HTTPUpgrade、XHTTP 和自带 TLS 私钥的 listener 会被主动隐藏；WS-CDN 节点应使用普通 VLESS WS listener，由 Cloudflare 在公网侧提供 TLS。
+
+### 出口显示 `sync_failed`
+
+这表示 VPN 本身已经连接，问题发生在 Mihomo 配置检查或重启阶段。执行 `fy log` 查看具体原因，先修复 Mihomo YAML、配置路径或服务启动问题。不要反复删除节点，程序会自动重试同步。
+
+### 节点能连接，但检测到的是 VPS 直连 IP
+
+确认入站没有出现在“未绑定出口”区域，出口状态必须为“正常”。同时核对客户端实际使用的 UUID、Host、SNI 和 WS Path 是否对应页面中的受管入站，而不是另一个未接管的 listener。
+
+### 提示 TUN 不可用
+
+执行 `ls -l /dev/net/tun`。文件不存在时，需要在 VPS 或容器管理面板开启 TUN/TAP；受限容器可能还需要服务商开放网络命名空间和相关权限。FanoutYUNDAN 无法用应用层设置绕过这些宿主机限制。
 
 ## 工作原理
 
-每个 VPN Gate 节点运行在独立 Linux network namespace 中。OpenVPN 只改变自己的 namespace 路由，母机和其他出口不受影响。母机上的固定 SOCKS5 端口通过 `setns` 从对应 namespace 建立 TCP 连接。
-
 ```text
-Mihomo 入站 -> IN-USER 规则 -> 固定 SOCKS5 端口 -> netns -> OpenVPN -> VPN Gate 出口
+VLESS WS / Cloudflare CDN
+          ↓
+Mihomo listener → IN-USER 规则 → 固定 SOCKS5 端口
+                                      ↓
+                         network namespace → OpenVPN → VPN Gate
 ```
 
-健康检查会验证实际出口 IP。连续失败后自动选择同地区候选节点重连，槽位和 SOCKS5 端口保持不变，因此 Mihomo 链接无需删除重建。
+每个 VPN Gate 出口位于独立 Linux network namespace 中，OpenVPN 不会改变母机或其他出口的默认路由。OpenVPN 连接还会验证服务器证书用途，减少接入错误服务端的风险。
 
-## 限制
+当前稳定版：[v2.1.2](https://github.com/tanying-spec/FanoutYUNDAN/releases/tag/v2.1.2) · 版本变化：[CHANGELOG.md](CHANGELOG.md)
 
-- 只转发 TCP；SOCKS5 域名在母机解析。
-- VPN Gate 是志愿者网络，节点可能离线、满员或速度变化。
-- 管理页面使用随机路径和口令，但默认是 HTTP；公网使用建议配置 HTTPS 反向代理或 Cloudflare Tunnel。
-
-版本变化见 [CHANGELOG.md](CHANGELOG.md)。项目延续 [byJoey/fanout](https://github.com/byJoey/fanout) 的 MIT 许可和 network namespace 设计。
+项目延续 [byJoey/fanout](https://github.com/byJoey/fanout) 的 MIT 许可和 network namespace 设计。
