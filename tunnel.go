@@ -24,12 +24,13 @@ type Tunnel struct {
 	Since       time.Time `json:"since"`
 	BindAddress string    `json:"-"`
 
-	ns       string
-	listener net.Listener
-	ovpn     *exec.Cmd
-	mu       sync.RWMutex
-	opMu     sync.Mutex
-	closed   bool
+	ns         string
+	listener   net.Listener
+	ovpn       *exec.Cmd
+	mu         sync.RWMutex
+	opMu       sync.Mutex
+	closed     bool
+	rebindFrom string
 }
 
 // TunnelSnapshot is an immutable copy used by API, persistence and backend
@@ -83,6 +84,18 @@ func (t *Tunnel) isClosed() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return t.closed
+}
+
+func (t *Tunnel) setPendingRebind(host string) {
+	t.mu.Lock()
+	t.rebindFrom = host
+	t.mu.Unlock()
+}
+
+func (t *Tunnel) pendingRebind() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.rebindFrom
 }
 
 func tunnelRoutable(status string) bool {

@@ -101,7 +101,7 @@ func (m *Manager) restoreState() (int, error) {
 		m.mu.Lock()
 		m.tunnels[p.Slot] = t
 		m.mu.Unlock()
-		go m.bringUp(t, true)
+		go m.bringUpRestored(t, p.HostName)
 	}
 	return len(st.Tunnels), nil
 }

@@ -42,7 +42,7 @@ func (m *Manager) WatchHealth() {
 					t.opMu.Unlock()
 					continue
 				}
-				if err := m.resync(t); err == nil {
+				if err := m.retryTunnelSync(t); err == nil {
 					t.setState("up", "")
 				} else {
 					t.setState("sync_failed", "VPN 已连接，但 Mihomo 同步失败: "+err.Error())
@@ -147,7 +147,7 @@ func (m *Manager) reconnectStarted(t *Tunnel, oldHost string) {
 		// 出站 tag 跟着节点名走，换了节点就要把原来指向它的入站重新绑过去，
 		// 否则面板里的路由会指向一个已经不存在的出站。
 		if snap.Node.HostName != oldHost {
-			if err := m.rebind(oldHost, t); err != nil {
+			if err := m.syncRestoredTunnel(t, oldHost); err != nil {
 				log.Printf("重连后同步 3x-ui 绑定失败: %v", err)
 				t.setState("sync_failed", "VPN 已连接，但 Mihomo 同步失败: "+err.Error())
 				return
@@ -157,7 +157,7 @@ func (m *Manager) reconnectStarted(t *Tunnel, oldHost string) {
 		}
 		// 节点名没变也要重写一次出站：出口 IP 可能变了，
 		// 而且上一轮换节点时留下的绑定需要重新指回来。
-		if err := m.resync(t); err != nil {
+		if err := m.syncRestoredTunnel(t, oldHost); err != nil {
 			log.Printf("重连后重写 3x-ui 出站失败: %v", err)
 			t.setState("sync_failed", "VPN 已连接，但 Mihomo 同步失败: "+err.Error())
 			return

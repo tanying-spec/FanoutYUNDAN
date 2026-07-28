@@ -72,6 +72,18 @@ func TestClosedTunnelCannotReconnect(t *testing.T) {
 	}
 }
 
+func TestPendingRebindSurvivesSyncFailure(t *testing.T) {
+	tunnel := &Tunnel{Node: Node{HostName: "new-node"}, Status: "sync_failed"}
+	tunnel.setPendingRebind("old-node")
+	if got := tunnel.pendingRebind(); got != "old-node" {
+		t.Fatalf("pending rebind = %q, want old-node", got)
+	}
+	tunnel.setPendingRebind("")
+	if got := tunnel.pendingRebind(); got != "" {
+		t.Fatalf("cleared pending rebind = %q", got)
+	}
+}
+
 func TestMihomoTemplatesHideUnsupportedListeners(t *testing.T) {
 	dir := t.TempDir()
 	config := `listeners:

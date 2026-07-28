@@ -116,6 +116,42 @@ func (m *Manager) bringUp(t *Tunnel, notify bool) {
 	m.bringUpLocked(t, notify)
 }
 
+// bringUpRestored reconnects a persisted tunnel. Unlike a newly created
+// tunnel, existing inbounds may still point at the saved VPN Gate hostname.
+// If fallback selects another node, migrate those bindings before reporting up.
+func (m *Manager) bringUpRestored(t *Tunnel, oldHost string) {
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+	m.bringUpLocked(t, false)
+	if t.snapshot().Status != "vpn_up" {
+		return
+	}
+	if err := m.syncRestoredTunnel(t, oldHost); err != nil {
+		t.setState("sync_failed", "VPN 已连接，但 Mihomo 同步失败: "+err.Error())
+		return
+	}
+	t.setState("up", "")
+}
+
+func (m *Manager) syncRestoredTunnel(t *Tunnel, oldHost string) error {
+	if t.snapshot().Node.HostName != oldHost {
+		t.setPendingRebind(oldHost)
+		if err := m.rebind(oldHost, t); err != nil {
+			return err
+		}
+		t.setPendingRebind("")
+		return nil
+	}
+	return m.resync(t)
+}
+
+func (m *Manager) retryTunnelSync(t *Tunnel) error {
+	if oldHost := t.pendingRebind(); oldHost != "" {
+		return m.syncRestoredTunnel(t, oldHost)
+	}
+	return m.resync(t)
+}
+
 func (m *Manager) bringUpLocked(t *Tunnel, notify bool) {
 	// VPN Gate 是志愿者节点，列表里有相当比例已下线或满员（AUTH_FAILED），
 	// 连不上就顺着候选列表换下一个，不必让用户手动试。
@@ -324,7 +360,7 @@ func (m *Manager) nodeInUse(host string, exceptSlot int) bool {
 func (m *Manager) rebind(oldHost string, t *Tunnel) error {
 	x, err := openPanel()
 	if err != nil {
-		return nil
+		return err
 	}
 	return x.Rebind(oldHost, t, m.Tunnels())
 }
@@ -334,7 +370,7 @@ func (m *Manager) rebind(oldHost string, t *Tunnel) error {
 func (m *Manager) resync(t *Tunnel) error {
 	x, err := openPanel()
 	if err != nil {
-		return nil
+		return err
 	}
 	return x.ResyncOutbound(t, m.Tunnels())
 }
