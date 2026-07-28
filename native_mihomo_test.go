@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,6 +103,73 @@ func TestMergeMihomoConfigRejectsMissingTemplate(t *testing.T) {
 	_, err := mergeMihomoConfig([]byte(testMihomoConfig), []*nativeInbound{ib}, []*Tunnel{testTunnel("vpn-jp", 24536)})
 	if err == nil {
 		t.Fatal("expected missing listener error")
+	}
+}
+
+func TestMergeMihomoConfigRemovesOrphanedManagedUsers(t *testing.T) {
+	config := strings.Replace(testMihomoConfig,
+		"      - username: personal\n        uuid: 11111111-1111-4111-8111-111111111111",
+		"      - username: personal\n        uuid: 11111111-1111-4111-8111-111111111111\n      - username: fy-orphan-1\n        uuid: 33333333-3333-4333-8333-333333333333", 1)
+	config = strings.Replace(config, "  - MATCH,DIRECT", "  - IN-USER,fy-orphan-1,fy-out-old\n  - MATCH,DIRECT", 1)
+	out, err := mergeMihomoConfig([]byte(config), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, "fy-orphan-1") || strings.Contains(s, "fy-out-old") {
+		t.Fatalf("orphaned managed user/rule survived:\n%s", s)
+	}
+	if !strings.Contains(s, "username: personal") {
+		t.Fatalf("personal user was removed:\n%s", s)
+	}
+}
+
+func TestRecoverNativeStoreBackupOnlyForMatchingMihomoUser(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.yaml")
+	backup := &nativeStore{NextID: 2, Inbounds: []*nativeInbound{testInbound("vpn-jp")}}
+	backupBlob, _ := json.Marshal(backup)
+	if err := os.WriteFile(nativeBackupPath(dir), backupBlob, 0600); err != nil {
+		t.Fatal(err)
+	}
+	config := strings.Replace(testMihomoConfig,
+		"      - username: personal\n        uuid: 11111111-1111-4111-8111-111111111111",
+		"      - username: personal\n        uuid: 11111111-1111-4111-8111-111111111111\n      - username: fy-abc123-1\n        uuid: 22222222-2222-4222-8222-222222222222", 1)
+	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	restored, ok, err := recoverNativeStoreBackup(dir, configPath, &nativeStore{NextID: 2})
+	if err != nil || !ok || len(restored.Inbounds) != 1 {
+		t.Fatalf("backup not restored: ok=%v err=%v store=%#v", ok, err, restored)
+	}
+	if err := os.WriteFile(configPath, []byte(testMihomoConfig), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, ok, err = recoverNativeStoreBackup(dir, configPath, &nativeStore{NextID: 2})
+	if err != nil || ok {
+		t.Fatalf("backup restored without matching Mihomo user: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestNativeStoreSaveKeepsLastNonEmptyBackup(t *testing.T) {
+	dir := t.TempDir()
+	nonEmpty := &nativeStore{NextID: 2, Inbounds: []*nativeInbound{testInbound("vpn-jp")}}
+	if err := nonEmpty.save(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&nativeStore{NextID: 2}).save(dir); err != nil {
+		t.Fatal(err)
+	}
+	firstBackup, err := os.ReadFile(nativeBackupPath(dir))
+	if err != nil || !strings.Contains(string(firstBackup), "fy-abc123-1") {
+		t.Fatalf("non-empty backup missing: %v %s", err, firstBackup)
+	}
+	if err := (&nativeStore{NextID: 2}).save(dir); err != nil {
+		t.Fatal(err)
+	}
+	secondBackup, err := os.ReadFile(nativeBackupPath(dir))
+	if err != nil || !bytes.Equal(firstBackup, secondBackup) {
+		t.Fatal("empty state overwrote last non-empty backup")
 	}
 }
 

@@ -118,7 +118,8 @@ type nativeStore struct {
 	Inbounds []*nativeInbound `json:"inbounds"`
 }
 
-func nativeStatePath(dir string) string { return filepath.Join(dir, "native.json") }
+func nativeStatePath(dir string) string  { return filepath.Join(dir, "native.json") }
+func nativeBackupPath(dir string) string { return filepath.Join(dir, "native.json.bak") }
 
 func loadNativeStore(dir string) (*nativeStore, error) {
 	blob, err := os.ReadFile(nativeStatePath(dir))
@@ -136,6 +137,11 @@ func loadNativeStore(dir string) (*nativeStore, error) {
 	if err := json.Unmarshal(blob, &st); err != nil {
 		return nil, fmt.Errorf("解析 %s 失败: %w", nativeStatePath(dir), err)
 	}
+	normalizeNativeStore(&st)
+	return &st, nil
+}
+
+func normalizeNativeStore(st *nativeStore) {
 	if st.NextID < 1 {
 		st.NextID = 1
 	}
@@ -153,7 +159,71 @@ func loadNativeStore(dir string) (*nativeStore, error) {
 			ib.clientUsername(i, &ib.Clients[i])
 		}
 	}
-	return &st, nil
+}
+
+// recoverNativeStoreBackup only restores entries whose exact managed
+// username and UUID are still present in Mihomo. A normal user deletion first
+// removes those users from Mihomo, so it cannot be undone on the next restart.
+func recoverNativeStoreBackup(dir, configPath string, current *nativeStore) (*nativeStore, bool, error) {
+	if len(current.Inbounds) != 0 {
+		return current, false, nil
+	}
+	backupBlob, err := os.ReadFile(nativeBackupPath(dir))
+	if os.IsNotExist(err) {
+		return current, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("读取入站状态备份失败: %w", err)
+	}
+	var backup nativeStore
+	if err := json.Unmarshal(backupBlob, &backup); err != nil {
+		return nil, false, fmt.Errorf("解析入站状态备份失败: %w", err)
+	}
+	normalizeNativeStore(&backup)
+	if len(backup.Inbounds) == 0 {
+		return current, false, nil
+	}
+	configBlob, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("恢复入站状态时读取 Mihomo 配置失败: %w", err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(configBlob, &cfg); err != nil {
+		return nil, false, fmt.Errorf("恢复入站状态时解析 Mihomo 配置失败: %w", err)
+	}
+	present := map[string]string{}
+	listeners, _ := cfg["listeners"].([]any)
+	for _, raw := range listeners {
+		listener, ok := raw.(map[string]any)
+		if !ok || strings.ToLower(fmt.Sprint(listener["type"])) != "vless" {
+			continue
+		}
+		users, _ := listener["users"].([]any)
+		for _, rawUser := range users {
+			if user, ok := rawUser.(map[string]any); ok {
+				present[fmt.Sprint(user["username"])] = fmt.Sprint(user["uuid"])
+			}
+		}
+	}
+	recovered := make([]*nativeInbound, 0, len(backup.Inbounds))
+	for _, ib := range backup.Inbounds {
+		matched := false
+		for i := range ib.Clients {
+			client := &ib.Clients[i]
+			if present[ib.clientUsername(i, client)] == client.ID {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			recovered = append(recovered, ib)
+		}
+	}
+	if len(recovered) == 0 {
+		return current, false, nil
+	}
+	backup.Inbounds = recovered
+	return &backup, true, nil
 }
 
 type legacyMihomoState struct {
@@ -344,11 +414,24 @@ func (s *nativeStore) save(dir string) error {
 	if err != nil {
 		return err
 	}
-	tmp := nativeStatePath(dir) + ".tmp"
+	path := nativeStatePath(dir)
+	if current, readErr := os.ReadFile(path); readErr == nil {
+		var previous nativeStore
+		if json.Unmarshal(current, &previous) == nil && len(previous.Inbounds) > 0 {
+			backupTmp := nativeBackupPath(dir) + ".tmp"
+			if err := os.WriteFile(backupTmp, current, 0600); err != nil {
+				return err
+			}
+			if err := os.Rename(backupTmp, nativeBackupPath(dir)); err != nil {
+				return err
+			}
+		}
+	}
+	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, blob, 0600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, nativeStatePath(dir))
+	return os.Rename(tmp, path)
 }
 
 func (s *nativeStore) byID(id int) *nativeInbound {

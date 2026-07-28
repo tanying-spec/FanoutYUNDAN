@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"strings"
@@ -30,6 +31,15 @@ func openNative(workDir string) (*Native, error) {
 	store, err := loadNativeStore(workDir)
 	if err != nil {
 		return nil, err
+	}
+	if restored, ok, recoverErr := recoverNativeStoreBackup(workDir, backend.configPath, store); recoverErr != nil {
+		return nil, recoverErr
+	} else if ok {
+		store = restored
+		if err := store.save(workDir); err != nil {
+			return nil, fmt.Errorf("保存恢复的入站状态失败: %w", err)
+		}
+		log.Printf("已从备份恢复 %d 个 Mihomo 入站", len(store.Inbounds))
 	}
 	n := &Native{
 		dir:    workDir,
