@@ -156,6 +156,6 @@ Mihomo listener → IN-USER 规则 → 固定 SOCKS5 端口
 
 每个 VPN Gate 出口位于独立 Linux network namespace 中，OpenVPN 不会改变母机或其他出口的默认路由。OpenVPN 连接还会验证服务器证书用途，减少接入错误服务端的风险。
 
-当前稳定版：[v2.1.2](https://github.com/tanying-spec/FanoutYUNDAN/releases/tag/v2.1.2) · 版本变化：[CHANGELOG.md](CHANGELOG.md)
+当前稳定版：[v2.1.3](https://github.com/tanying-spec/FanoutYUNDAN/releases/tag/v2.1.3) · 版本变化：[CHANGELOG.md](CHANGELOG.md)
 
 项目延续 [byJoey/fanout](https://github.com/byJoey/fanout) 的 MIT 许可和 network namespace 设计。

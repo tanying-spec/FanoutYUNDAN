@@ -249,8 +249,11 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 		kept := users[:0]
 		for _, u := range users {
 			um, ok := u.(map[string]any)
-			if ok && managedUsers[fmt.Sprint(um["username"])] {
-				continue
+			if ok {
+				username := fmt.Sprint(um["username"])
+				if managedUsers[username] || strings.HasPrefix(username, "fy-") {
+					continue
+				}
 			}
 			kept = append(kept, u)
 		}
@@ -299,7 +302,7 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 	cleanRules := make([]any, 0, len(rules)+len(inbounds))
 	for _, r := range rules {
 		text := fmt.Sprint(r)
-		managedRule := false
+		managedRule := strings.HasPrefix(text, "IN-USER,fy-")
 		for username := range managedUsers {
 			if strings.HasPrefix(text, "IN-USER,"+username+",") {
 				managedRule = true
