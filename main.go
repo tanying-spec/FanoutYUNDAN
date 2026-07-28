@@ -7,12 +7,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // version 由构建时通过 -ldflags 注入。
@@ -100,27 +102,27 @@ func main() {
 	mux.HandleFunc("/", handleIndex)
 	mux.HandleFunc("/api/nodes", apiNodes(mgr))
 	mux.HandleFunc("/api/tunnels", apiTunnels(mgr))
-	mux.HandleFunc("/api/start", apiStart(mgr))
-	mux.HandleFunc("/api/stop", apiStop(mgr))
-	mux.HandleFunc("/api/swap", apiSwap(mgr))
-	mux.HandleFunc("/api/refresh", apiRefresh(mgr))
+	mux.HandleFunc("/api/start", mutation(apiStart(mgr)))
+	mux.HandleFunc("/api/stop", mutation(apiStop(mgr)))
+	mux.HandleFunc("/api/swap", mutation(apiSwap(mgr)))
+	mux.HandleFunc("/api/refresh", mutation(apiRefresh(mgr)))
 	mux.HandleFunc("/api/regions", apiRegions(mgr))
-	mux.HandleFunc("/api/provision", apiProvision(mgr))
+	mux.HandleFunc("/api/provision", mutation(apiProvision(mgr)))
 	mux.HandleFunc("/api/jobs", apiJobs(mgr))
-	mux.HandleFunc("/api/jobs/dismiss", apiJobDismiss(mgr))
+	mux.HandleFunc("/api/jobs/dismiss", mutation(apiJobDismiss(mgr)))
 	mux.HandleFunc("/api/exits", apiExits(mgr))
 	mux.HandleFunc("/api/xui", apiXUIStatus)
 	mux.HandleFunc("/api/xui/inbounds", apiXUIInbounds(mgr))
-	mux.HandleFunc("/api/xui/bind", apiXUIBind(mgr))
-	mux.HandleFunc("/api/xui/clone", apiXUIClone(mgr))
+	mux.HandleFunc("/api/xui/bind", mutation(apiXUIBind(mgr)))
+	mux.HandleFunc("/api/xui/clone", mutation(apiXUIClone(mgr)))
 	mux.HandleFunc("/api/xui/detail", apiXUIDetail(mgr))
 	mux.HandleFunc("/api/xui/links", apiXUILinks)
-	mux.HandleFunc("/api/xui/delete", apiXUIDelete(mgr))
-	mux.HandleFunc("/api/panel/inbound/new", apiInboundCreate(mgr))
-	mux.HandleFunc("/api/panel/inbound/update", apiInboundUpdate(mgr))
-	mux.HandleFunc("/api/panel/client/add", apiClientAdd(mgr))
-	mux.HandleFunc("/api/panel/client/del", apiClientDelete(mgr))
-	mux.HandleFunc("/api/panel/client/reset", apiClientReset(mgr))
+	mux.HandleFunc("/api/xui/delete", mutation(apiXUIDelete(mgr)))
+	mux.HandleFunc("/api/panel/inbound/new", mutation(apiInboundCreate(mgr)))
+	mux.HandleFunc("/api/panel/inbound/update", mutation(apiInboundUpdate(mgr)))
+	mux.HandleFunc("/api/panel/client/add", mutation(apiClientAdd(mgr)))
+	mux.HandleFunc("/api/panel/client/del", mutation(apiClientDelete(mgr)))
+	mux.HandleFunc("/api/panel/client/reset", mutation(apiClientReset(mgr)))
 
 	auth, created, err := NewAuth(*workDir)
 	if err != nil {
@@ -141,8 +143,34 @@ func main() {
 	addr := net.JoinHostPort(*webBind, strconv.Itoa(*webPort))
 	log.Printf("管理界面: http://<本机IP>%s%s/", addr, basePath)
 	log.Printf("SOCKS5 端口在 %d-%d 之间随机分配", randPortMin, randPortMax)
-	if err := http.ListenAndServe(addr, StripBasePath(basePath, auth.Wrap(mux))); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           StripBasePath(basePath, auth.Wrap(mux)),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       20 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func mutation(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "该操作只接受 POST 请求"})
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || !strings.EqualFold(u.Host, r.Host) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "拒绝跨站管理请求"})
+				return
+			}
+		}
+		next(w, r)
 	}
 }
 
@@ -334,8 +362,9 @@ func apiXUIInbounds(m *Manager) http.HandlerFunc {
 func liveHosts(m *Manager) map[string]bool {
 	live := map[string]bool{}
 	for _, t := range m.Tunnels() {
-		if t.Status == "up" {
-			live[sanitizeTag(t.Node.HostName)] = true
+		snap := t.snapshot()
+		if snap.Status == "up" {
+			live[sanitizeTag(snap.Node.HostName)] = true
 		}
 	}
 	return live
@@ -384,8 +413,9 @@ func apiXUIClone(m *Manager) http.HandlerFunc {
 			}
 		} else {
 			for _, t := range tunnels {
-				if t.Status == "up" {
-					hosts = append(hosts, t.Node.HostName)
+				snap := t.snapshot()
+				if snap.Status == "up" {
+					hosts = append(hosts, snap.Node.HostName)
 				}
 			}
 		}

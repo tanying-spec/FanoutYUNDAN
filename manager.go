@@ -83,7 +83,7 @@ func (m *Manager) Start(node Node) (*Tunnel, error) {
 	// 端口随机取，避免固定规律撞上机器上的其他服务
 	taken := map[int]bool{}
 	for _, other := range m.tunnels {
-		taken[other.Port] = true
+		taken[other.snapshot().Port] = true
 	}
 	port, err := freeRandomPort(taken)
 	if err != nil {
@@ -111,31 +111,49 @@ func (m *Manager) Start(node Node) (*Tunnel, error) {
 // 那条路径随后会调 rebind/resync 把入站改绑到新节点，在那之前重建配置
 // 会因为入站还指着旧节点名而把路由规则丢掉。
 func (m *Manager) bringUp(t *Tunnel, notify bool) {
+	t.opMu.Lock()
+	defer t.opMu.Unlock()
+	m.bringUpLocked(t, notify)
+}
+
+func (m *Manager) bringUpLocked(t *Tunnel, notify bool) {
 	// VPN Gate 是志愿者节点，列表里有相当比例已下线或满员（AUTH_FAILED），
 	// 连不上就顺着候选列表换下一个，不必让用户手动试。
-	candidates := m.candidatesFor(t.Node)
+	candidates := m.candidatesFor(t.snapshot().Node)
 	var lastErr error
 
 	for i, node := range candidates {
+		if t.isClosed() {
+			return
+		}
 		// 其他隧道可能在重试期间占用了这个节点，跳过以免多个端口撞同一出口 IP
 		if i > 0 && m.nodeInUse(node.HostName, t.Slot) {
 			continue
 		}
-		t.Node = node
+		t.setNode(node)
 		if i > 0 {
-			t.Status = "starting"
-			t.Err = fmt.Sprintf("已换到第 %d 个候选节点", i+1)
+			t.setState("starting", fmt.Sprintf("已换到第 %d 个候选节点", i+1))
 		}
 
 		err := m.tryNode(t)
 		if err == nil {
-			t.Status = "up"
-			t.Err = ""
+			if t.isClosed() {
+				t.stopOpenVPN()
+				t.teardownNetns()
+				return
+			}
+			t.setState("syncing", "正在同步 Mihomo 配置")
+			if notify {
+				if syncErr := m.notifyPanel(); syncErr != nil {
+					t.setState("sync_failed", "VPN 已连接，但 Mihomo 同步失败: "+syncErr.Error())
+					return
+				}
+				t.setState("up", "")
+			} else {
+				t.setState("vpn_up", "等待同步 Mihomo 配置")
+			}
 			if serr := m.saveState(); serr != nil {
 				log.Printf("保存状态失败: %v", serr)
-			}
-			if notify {
-				m.notifyPanel()
 			}
 			return
 		}
@@ -144,10 +162,11 @@ func (m *Manager) bringUp(t *Tunnel, notify bool) {
 		t.teardownNetns()
 	}
 
-	t.Status = "failed"
+	message := ""
 	if lastErr != nil {
-		t.Err = fmt.Sprintf("尝试 %d 个节点均失败，最后一个: %v", len(candidates), lastErr)
+		message = fmt.Sprintf("尝试 %d 个节点均失败，最后一个: %v", len(candidates), lastErr)
 	}
+	t.setState("failed", message)
 	if serr := m.saveState(); serr != nil {
 		log.Printf("保存状态失败: %v", serr)
 	}
@@ -165,8 +184,8 @@ func (m *Manager) tryNode(t *Tunnel) error {
 	if err != nil {
 		return err
 	}
-	t.ExitIP = ip
-	if t.listener == nil {
+	t.setExitIP(ip)
+	if !t.hasListener() {
 		if err := t.serve(); err != nil {
 			return err
 		}
@@ -182,7 +201,7 @@ func (m *Manager) candidatesFor(first Node) []Node {
 
 	used := map[string]bool{first.HostName: true}
 	for _, t := range m.tunnels {
-		used[t.Node.HostName] = true
+		used[t.snapshot().Node.HostName] = true
 	}
 
 	// 地区决定了备选范围，缺失时先从当前列表补一次，
@@ -230,7 +249,9 @@ func (m *Manager) Stop(slot int) error {
 	if err := m.saveState(); err != nil {
 		log.Printf("保存状态失败: %v", err)
 	}
-	m.notifyPanel()
+	if err := m.notifyPanel(); err != nil {
+		log.Printf("同步节点链接后端失败: %v", err)
+	}
 	return nil
 }
 
@@ -245,18 +266,22 @@ func (m *Manager) Swap(slot int) error {
 	if !ok {
 		return fmt.Errorf("槽位 %d 没有运行中的隧道", slot)
 	}
-	if t.Status == "starting" {
+	snap := t.snapshot()
+	if snap.Status == "starting" || snap.Status == "syncing" || snap.Status == "vpn_up" {
 		return fmt.Errorf("这个出口正在连接中，稍等一下")
 	}
 
 	// pickNodes 已排除所有在用节点，拿到的必然不是当前这个
-	picks, err := m.pickNodes(t.Node.CountryCode, 1)
+	picks, err := m.pickNodes(snap.Node.CountryCode, 1)
 	if err != nil {
 		return err
 	}
-	oldHost := t.Node.HostName
-	t.Node = picks[0]
-	m.reconnect(t, oldHost)
+	oldHost := snap.Node.HostName
+	if !t.beginReconnect() {
+		return fmt.Errorf("这个出口正在执行其他操作")
+	}
+	t.setNode(picks[0])
+	m.reconnectStarted(t, oldHost)
 	return nil
 }
 
@@ -287,7 +312,7 @@ func (m *Manager) nodeInUse(host string, exceptSlot int) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for slot, t := range m.tunnels {
-		if slot != exceptSlot && t.Node.HostName == host {
+		if slot != exceptSlot && t.snapshot().Node.HostName == host {
 			return true
 		}
 	}
@@ -319,12 +344,10 @@ func (m *Manager) resync(t *Tunnel) error {
 // 自建模式下出站是由隧道列表现算出来的，不通知的话新开的出口在 Xray 里
 // 没有对应的 socks 出站，绑定会指向一个不存在的 tag。接管 3x-ui 时是空操作。
 // 后端不可用不该让开关出口失败，所以只记日志。
-func (m *Manager) notifyPanel() {
+func (m *Manager) notifyPanel() error {
 	p, err := openPanel()
 	if err != nil {
-		return
+		return err
 	}
-	if err := p.OnTunnelsChanged(m.Tunnels()); err != nil {
-		log.Printf("同步节点链接后端失败: %v", err)
-	}
+	return p.OnTunnelsChanged(m.Tunnels())
 }

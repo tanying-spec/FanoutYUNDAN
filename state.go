@@ -29,18 +29,19 @@ func statePath(dir string) string { return filepath.Join(dir, "state.json") }
 func (m *Manager) saveState() error {
 	var st persistedState
 	for _, t := range m.Tunnels() {
+		snap := t.snapshot()
 		// 只跳过用户主动停掉的。starting/failed 的隧道也要存：
 		// 它们正在重连或等着重试，漏存会让重启后凭空少几个出口。
-		if t.Status == "stopped" {
+		if snap.Status == "stopped" {
 			continue
 		}
 		st.Tunnels = append(st.Tunnels, persistedTunnel{
-			Slot:        t.Slot,
-			Port:        t.Port,
-			HostName:    t.Node.HostName,
-			CountryCode: t.Node.CountryCode,
-			Country:     t.Node.Country,
-			Config:      t.Node.Config,
+			Slot:        snap.Slot,
+			Port:        snap.Port,
+			HostName:    snap.Node.HostName,
+			CountryCode: snap.Node.CountryCode,
+			Country:     snap.Node.Country,
+			Config:      snap.Node.Config,
 		})
 	}
 
@@ -73,7 +74,8 @@ func (m *Manager) restoreState() (int, error) {
 
 	// 从当前节点列表补回地区、延迟等元数据；节点已下线时退回存盘的最小信息
 	known := map[string]Node{}
-	for _, n := range m.nodes {
+	nodes, _ := m.Nodes()
+	for _, n := range nodes {
 		known[n.HostName] = n
 	}
 

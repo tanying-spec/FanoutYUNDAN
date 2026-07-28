@@ -235,14 +235,55 @@ wait_ready() {
     if [ "$SYSTEM" = openrc ]; then rc-service fanout-yundan status >/dev/null 2>&1 && running=1
     else systemctl is-active --quiet fanout-yundan && running=1; fi
     if [ "$running" = 1 ] && [ -s "$WORK_DIR/password" ] && [ -s "$WORK_DIR/basepath" ]; then
-      saved_port="$(jq -r '.tunnels[0].port // empty' "$WORK_DIR/state.json" 2>/dev/null || true)"
-      if [ -z "$saved_port" ] || ss -lnt 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${saved_port}$"; then
-        return 0
+      base="$(tr -d '[:space:]' < "$WORK_DIR/basepath")"
+      password="$(tr -d '\r\n' < "$WORK_DIR/password")"
+      cookie="$tmp/ready.cookie"
+      if curl -fsS --max-time 3 -c "$cookie" --data-urlencode "password=$password" "http://127.0.0.1:${WEB_PORT}/${base}/login" >/dev/null 2>&1; then
+        exits="$(curl -fsS --max-time 3 -b "$cookie" "http://127.0.0.1:${WEB_PORT}/${base}/api/exits" 2>/dev/null || true)"
+        saved_count="$(jq -r '.tunnels | length' "$WORK_DIR/state.json" 2>/dev/null || printf 0)"
+        ready_count="$(printf '%s' "$exits" | jq -r '[.exits[]? | select(.status == "up")] | length' 2>/dev/null || printf 0)"
+        panel_error="$(printf '%s' "$exits" | jq -r '.panel // ""' 2>/dev/null || printf invalid)"
+        if [ -n "$exits" ] && [ "$panel_error" = "" ] && [ "$ready_count" -ge "$saved_count" ]; then
+          return 0
+        fi
       fi
     fi
     i=$((i+1)); sleep 1
   done
   return 1
+}
+
+rollback_current_upgrade() {
+  [ -n "${backup:-}" ] && [ -f "$backup" ] || return 0
+  cp "$backup" "$BIN"
+  chmod 0755 "$BIN"
+  if [ -f "$tmp/install.env.previous" ]; then cp "$tmp/install.env.previous" "$WORK_DIR/install.env"; fi
+  if [ "$SYSTEM" = openrc ]; then
+    [ ! -f "$tmp/service.previous" ] || cp "$tmp/service.previous" /etc/init.d/fanout-yundan
+    rc-service fanout-yundan restart >/dev/null 2>&1 || true
+  else
+    [ ! -f "$tmp/service.previous" ] || cp "$tmp/service.previous" /etc/systemd/system/fanout-yundan.service
+    systemctl daemon-reload
+    systemctl restart fanout-yundan >/dev/null 2>&1 || true
+  fi
+}
+
+rollback_install() {
+  if [ -n "${backup:-}" ] && [ -f "$backup" ]; then
+    rollback_current_upgrade
+    return
+  fi
+  if [ "$SYSTEM" = openrc ]; then
+    rc-service fanout-yundan stop >/dev/null 2>&1 || true
+    rc-update del fanout-yundan default >/dev/null 2>&1 || true
+    rm -f /etc/init.d/fanout-yundan
+  else
+    systemctl stop fanout-yundan >/dev/null 2>&1 || true
+    systemctl disable fanout-yundan >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/fanout-yundan.service
+    systemctl daemon-reload
+  fi
+  rm -f "$BIN" "$CLI"
 }
 
 prepare_legacy_upgrade() {
@@ -343,16 +384,26 @@ install_deps
 download_binary
 prepare_legacy_upgrade
 backup=""
-if [ -x "$BIN" ]; then backup="${BIN}.previous"; cp "$BIN" "$backup"; fi
+if [ -x "$BIN" ]; then
+  backup="${BIN}.previous"
+  cp "$BIN" "$backup"
+  [ ! -f "$WORK_DIR/install.env" ] || cp "$WORK_DIR/install.env" "$tmp/install.env.previous"
+  if [ "$SYSTEM" = openrc ]; then
+    [ ! -f /etc/init.d/fanout-yundan ] || cp /etc/init.d/fanout-yundan "$tmp/service.previous"
+  else
+    [ ! -f /etc/systemd/system/fanout-yundan.service ] || cp /etc/systemd/system/fanout-yundan.service "$tmp/service.previous"
+  fi
+fi
 install -m 0755 "$tmp/fanout-yundan-linux-${ARCH}" "$BIN"
 write_cli
 if ! write_service; then
-  [ -n "$backup" ] && cp "$backup" "$BIN"
+  rollback_install
   rollback_legacy_upgrade
   die "服务安装失败，已恢复旧程序"
 fi
 if ! wait_ready; then
-  rollback_legacy_upgrade
+	rollback_install
+	rollback_legacy_upgrade
   die "新服务未能就绪，旧版 fanout 已恢复"
 fi
 finish_legacy_upgrade

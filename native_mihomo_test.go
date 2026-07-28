@@ -49,8 +49,8 @@ func TestMergeMihomoConfigPreservesUserConfig(t *testing.T) {
 			t.Fatalf("missing %q in:\n%s", want, s)
 		}
 	}
-	if strings.Index(s, "DOMAIN,example.com,personal-proxy") > strings.Index(s, "IN-USER,fy-abc123-1") {
-		t.Fatal("managed rule changed existing rule priority")
+	if strings.Index(s, "IN-USER,fy-abc123-1") > strings.Index(s, "DOMAIN,example.com,personal-proxy") {
+		t.Fatal("managed per-user rule must precede broad user rules")
 	}
 	if strings.Index(s, "IN-USER,fy-abc123-1") > strings.Index(s, "MATCH,DIRECT") {
 		t.Fatal("managed rule inserted after MATCH")

@@ -148,7 +148,7 @@ func (n *Native) Bind(inboundTag string, hostname string, tunnels []*Tunnel) err
 	var target *Tunnel
 	if hostname != "" {
 		for _, t := range tunnels {
-			if t.Node.HostName == hostname {
+			if t.snapshot().Node.HostName == hostname {
 				target = t
 				break
 			}
@@ -156,8 +156,9 @@ func (n *Native) Bind(inboundTag string, hostname string, tunnels []*Tunnel) err
 		if target == nil {
 			return fmt.Errorf("节点 %s 没有运行中的隧道", hostname)
 		}
-		if target.Status != "up" {
-			return fmt.Errorf("节点 %s 的隧道还没连通（当前 %s）", hostname, target.Status)
+		targetSnap := target.snapshot()
+		if !tunnelRoutable(targetSnap.Status) {
+			return fmt.Errorf("节点 %s 的隧道还没连通（当前 %s）", hostname, targetSnap.Status)
 		}
 	}
 
@@ -175,7 +176,7 @@ func (n *Native) Bind(inboundTag string, hostname string, tunnels []*Tunnel) err
 	if target == nil {
 		found.BoundTo = ""
 	} else {
-		found.BoundTo = sanitizeTag(target.Node.HostName)
+		found.BoundTo = sanitizeTag(target.snapshot().Node.HostName)
 	}
 	return n.apply(tunnels)
 }
@@ -185,7 +186,7 @@ func (n *Native) Rebind(oldHost string, target *Tunnel, tunnels []*Tunnel) error
 	defer n.mu.Unlock()
 
 	oldTag := sanitizeTag(oldHost)
-	newTag := sanitizeTag(target.Node.HostName)
+	newTag := sanitizeTag(target.snapshot().Node.HostName)
 	newLabel := exitLabel(target)
 	for _, ib := range n.store.Inbounds {
 		if ib.BoundTo != oldTag {
@@ -218,13 +219,13 @@ func (n *Native) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunne
 
 	byHost := map[string]*Tunnel{}
 	for _, t := range tunnels {
-		byHost[t.Node.HostName] = t
+		byHost[t.snapshot().Node.HostName] = t
 	}
 
 	created := []int{}
 	for _, host := range hosts {
 		t := byHost[host]
-		if t == nil || t.Status != "up" {
+		if t == nil || t.snapshot().Status != "up" {
 			continue
 		}
 		clients := make([]nativeClient, 0, len(tpl.Clients))
@@ -253,7 +254,7 @@ func (n *Native) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunne
 			Remark:   cloneRemark(tpl.Remark, exitLabel(t)),
 			Enable:   true,
 			Clients:  clients,
-			BoundTo:  sanitizeTag(t.Node.HostName),
+			BoundTo:  sanitizeTag(t.snapshot().Node.HostName),
 		}
 		n.store.NextID++
 		n.store.Inbounds = append(n.store.Inbounds, clone)
