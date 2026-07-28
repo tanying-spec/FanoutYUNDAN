@@ -42,8 +42,9 @@ func findXray(workDir string) (string, error) {
 func buildXrayConfig(inbounds []*nativeInbound, tunnels []*Tunnel) map[string]any {
 	live := map[string]bool{}
 	for _, t := range tunnels {
-		if t.Status == "up" {
-			live[sanitizeTag(t.Node.HostName)] = true
+		snap := t.snapshot()
+		if tunnelRoutable(snap.Status) {
+			live[sanitizeTag(snap.Node.HostName)] = true
 		}
 	}
 
@@ -66,7 +67,8 @@ func buildXrayConfig(inbounds []*nativeInbound, tunnels []*Tunnel) map[string]an
 		map[string]any{"tag": "block", "protocol": "blackhole"},
 	}
 	for _, t := range tunnels {
-		if t.Status != "up" {
+		snap := t.snapshot()
+		if !tunnelRoutable(snap.Status) {
 			continue
 		}
 		outs = append(outs, map[string]any{
@@ -75,7 +77,7 @@ func buildXrayConfig(inbounds []*nativeInbound, tunnels []*Tunnel) map[string]an
 			"settings": map[string]any{
 				"servers": []any{map[string]any{
 					"address": "127.0.0.1",
-					"port":    t.Port,
+					"port":    snap.Port,
 				}},
 			},
 		})

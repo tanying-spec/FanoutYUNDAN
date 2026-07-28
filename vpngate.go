@@ -14,16 +14,19 @@ import (
 
 const vpngateAPI = "https://www.vpngate.net/api/iphone/"
 
+const maxVPNGateFeed = 32 << 20
+const maxOpenVPNConfigBase64 = 2 << 20
+
 // Node 是一个 VPN Gate 节点。
 type Node struct {
-	HostName    string `json:"hostname"`
-	IP          string `json:"ip"`
-	Country     string `json:"country"`
-	CountryCode string `json:"country_code"`
-	Ping        int    `json:"ping"`
+	HostName    string  `json:"hostname"`
+	IP          string  `json:"ip"`
+	Country     string  `json:"country"`
+	CountryCode string  `json:"country_code"`
+	Ping        int     `json:"ping"`
 	SpeedMbps   float64 `json:"speed_mbps"`
-	Sessions    int    `json:"sessions"`
-	Config      string `json:"-"` // 解码后的 .ovpn 内容
+	Sessions    int     `json:"sessions"`
+	Config      string  `json:"-"` // 解码后的 .ovpn 内容
 }
 
 // fetchNodes 拉取并解析 VPN Gate 的节点列表。
@@ -38,9 +41,12 @@ func fetchNodes(timeout time.Duration) ([]Node, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("拉取节点列表失败: HTTP %d", resp.StatusCode)
 	}
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxVPNGateFeed+1))
 	if err != nil {
 		return nil, fmt.Errorf("读取节点列表失败: %w", err)
+	}
+	if len(raw) > maxVPNGateFeed {
+		return nil, fmt.Errorf("节点列表超过 %d MiB 限制", maxVPNGateFeed>>20)
 	}
 	return parseNodeCSV(string(raw))
 }
@@ -89,7 +95,7 @@ func parseNodeCSV(body string) ([]Node, error) {
 			return rec[i]
 		}
 		cfgB64 := get("OpenVPN_ConfigData_Base64")
-		if cfgB64 == "" || get("HostName") == "" {
+		if cfgB64 == "" || len(cfgB64) > maxOpenVPNConfigBase64 || get("HostName") == "" {
 			continue
 		}
 		cfg, err := base64.StdEncoding.DecodeString(cfgB64)

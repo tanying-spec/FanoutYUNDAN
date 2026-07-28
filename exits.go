@@ -99,18 +99,20 @@ func (m *Manager) ExitsOf() ExitsView {
 
 	live := map[string]bool{}
 	for _, t := range tunnels {
-		if t.Status == "up" {
-			live[sanitizeTag(t.Node.HostName)] = true
+		snap := t.snapshot()
+		if snap.Status == "up" {
+			live[sanitizeTag(snap.Node.HostName)] = true
 		}
 	}
 
 	byHost := map[string]int{}
 	for i, t := range tunnels {
-		byHost[sanitizeTag(t.Node.HostName)] = i
+		snap := t.snapshot()
+		byHost[sanitizeTag(snap.Node.HostName)] = i
 		view.Exits = append(view.Exits, Exit{
-			Slot: t.Slot, Port: t.Port, Host: t.Node.HostName,
-			Region: t.Node.CountryCode, Country: t.Node.Country,
-			ExitIP: t.ExitIP, Status: t.Status, Err: t.Err, Since: t.Since,
+			Slot: snap.Slot, Port: snap.Port, Host: snap.Node.HostName,
+			Region: snap.Node.CountryCode, Country: snap.Node.Country,
+			ExitIP: snap.ExitIP, Status: snap.Status, Err: snap.Err, Since: snap.Since,
 		})
 	}
 

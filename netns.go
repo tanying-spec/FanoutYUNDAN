@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -53,6 +54,14 @@ func dialerInNetns(nsName string) func(network, addr string) (net.Conn, error) {
 
 		go func() {
 			runtime.LockOSThread()
+			switched := false
+			defer func() {
+				// If restoring the original namespace fails, leaving the thread
+				// locked makes the runtime retire it when this goroutine exits.
+				if !switched {
+					runtime.UnlockOSThread()
+				}
+			}()
 
 			origin, err := os.Open("/proc/self/ns/net")
 			if err != nil {
@@ -72,10 +81,12 @@ func dialerInNetns(nsName string) func(network, addr string) (net.Conn, error) {
 				ch <- result{nil, err}
 				return
 			}
+			switched = true
 
 			// 隧道内只有 IPv4 路由。不限定的话 net.Dial 可能选中 AAAA 记录，
 			// 那条连接会绕开隧道从母机的 IPv6 出去，暴露真实地址。
-			conn, dialErr := net.Dial(forceIPv4Network(network), addr)
+			dialer := net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+			conn, dialErr := dialer.Dial(forceIPv4Network(network), addr)
 
 			if err := unix.Setns(int(origin.Fd()), unix.CLONE_NEWNET); err != nil {
 				if conn != nil {
@@ -84,8 +95,8 @@ func dialerInNetns(nsName string) func(network, addr string) (net.Conn, error) {
 				ch <- result{nil, err}
 				return
 			}
+			switched = false
 
-			runtime.UnlockOSThread()
 			ch <- result{conn, dialErr}
 		}()
 

@@ -351,7 +351,7 @@ const xuiTagPrefix = "fanout-"
 // tunnelTag 用节点主机名而非槽位号做标识：槽位在 fanout 重启后会重新分配，
 // 用它做 tag 会让已有的入站绑定悄悄串到别的节点上。
 func tunnelTag(t *Tunnel) string {
-	return xuiTagPrefix + sanitizeTag(t.Node.HostName)
+	return xuiTagPrefix + sanitizeTag(t.snapshot().Node.HostName)
 }
 
 // sanitizeTag 把主机名收敛成安全的 tag 片段。
@@ -427,7 +427,7 @@ func (x *XUI) Bind(inboundTag string, hostname string, tunnels []*Tunnel) error 
 	var target *Tunnel
 	if hostname != "" {
 		for _, t := range tunnels {
-			if t.Node.HostName == hostname {
+			if t.snapshot().Node.HostName == hostname {
 				target = t
 				break
 			}
@@ -435,15 +435,17 @@ func (x *XUI) Bind(inboundTag string, hostname string, tunnels []*Tunnel) error 
 		if target == nil {
 			return fmt.Errorf("节点 %s 没有运行中的隧道", hostname)
 		}
-		if target.Status != "up" {
-			return fmt.Errorf("节点 %s 的隧道还没连通（当前 %s）", hostname, target.Status)
+		targetSnap := target.snapshot()
+		if !tunnelRoutable(targetSnap.Status) {
+			return fmt.Errorf("节点 %s 的隧道还没连通（当前 %s）", hostname, targetSnap.Status)
 		}
 	}
 
 	live := map[string]bool{}
 	for _, t := range tunnels {
-		if t.Status == "up" {
-			live[sanitizeTag(t.Node.HostName)] = true
+		snap := t.snapshot()
+		if tunnelRoutable(snap.Status) {
+			live[sanitizeTag(snap.Node.HostName)] = true
 		}
 	}
 	current, err := x.Inbounds(live)
@@ -524,7 +526,8 @@ func (x *XUI) syncOutbounds(setting map[string]any, tunnels []*Tunnel) {
 		}
 	}
 	for _, t := range tunnels {
-		if t.Status != "up" {
+		snap := t.snapshot()
+		if !tunnelRoutable(snap.Status) {
 			continue
 		}
 		kept = append(kept, map[string]any{
@@ -533,7 +536,7 @@ func (x *XUI) syncOutbounds(setting map[string]any, tunnels []*Tunnel) {
 			"settings": map[string]any{
 				"servers": []any{map[string]any{
 					"address": "127.0.0.1",
-					"port":    t.Port,
+					"port":    snap.Port,
 				}},
 			},
 		})
@@ -553,7 +556,7 @@ func (x *XUI) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunnel) 
 
 	byHost := map[string]*Tunnel{}
 	for _, t := range tunnels {
-		byHost[t.Node.HostName] = t
+		byHost[t.snapshot().Node.HostName] = t
 	}
 
 	used, err := x.usedPorts()
@@ -569,7 +572,7 @@ func (x *XUI) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunnel) 
 	created := []int{}
 	for _, host := range hosts {
 		t := byHost[host]
-		if t == nil || t.Status != "up" {
+		if t == nil || t.snapshot().Status != "up" {
 			continue
 		}
 
@@ -594,7 +597,7 @@ func (x *XUI) CloneToTunnels(templateID int, hosts []string, tunnels []*Tunnel) 
 		}
 		created = append(created, port)
 
-		if err := x.Bind(inboundTagOf(port, raw), t.Node.HostName, tunnels); err != nil {
+		if err := x.Bind(inboundTagOf(port, raw), t.snapshot().Node.HostName, tunnels); err != nil {
 			return created, fmt.Errorf("端口 %d 绑定失败: %w", port, err)
 		}
 	}
@@ -686,17 +689,18 @@ func cloneInboundPayload(tpl map[string]any, port int, t *Tunnel) (map[string]an
 // exitLabel 给复制出来的入站起个好认的名字：地区 + 出口 IP 末段。
 // 同一地区可能有多条隧道，带上末段才能区分。
 func exitLabel(t *Tunnel) string {
-	region := t.Node.CountryCode
+	snap := t.snapshot()
+	region := snap.Node.CountryCode
 	if region == "" {
-		region = t.Node.Country
+		region = snap.Node.Country
 	}
 
-	suffix := t.Node.HostName
-	if t.ExitIP != "" {
-		if i := strings.LastIndex(t.ExitIP, "."); i >= 0 {
-			suffix = t.ExitIP[i+1:]
+	suffix := snap.Node.HostName
+	if snap.ExitIP != "" {
+		if i := strings.LastIndex(snap.ExitIP, "."); i >= 0 {
+			suffix = snap.ExitIP[i+1:]
 		} else {
-			suffix = t.ExitIP
+			suffix = snap.ExitIP
 		}
 	}
 
@@ -1001,7 +1005,7 @@ func (x *XUI) Rebind(oldHost string, target *Tunnel, tunnels []*Tunnel) error {
 		if ib.BoundTo != oldTag {
 			continue
 		}
-		if err := x.Bind(ib.Tag, target.Node.HostName, tunnels); err != nil {
+		if err := x.Bind(ib.Tag, target.snapshot().Node.HostName, tunnels); err != nil {
 			return err
 		}
 		// 备注里带着旧出口的地区和 IP 尾段，换了节点要跟着改，否则名不副实
@@ -1176,8 +1180,9 @@ func (x *XUI) UpdateInbound(id int, patch InboundPatch, tunnels []*Tunnel) error
 		}
 		var host string
 		for _, t := range tunnels {
-			if sanitizeTag(t.Node.HostName) == boundTo {
-				host = t.Node.HostName
+			snap := t.snapshot()
+			if sanitizeTag(snap.Node.HostName) == boundTo {
+				host = snap.Node.HostName
 				break
 			}
 		}

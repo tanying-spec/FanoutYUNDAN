@@ -470,7 +470,10 @@ function fillMihomoTemplates(){
   if(old) el.value = old;
 }
 
-const STATUS = {up:'已连通', starting:'连接中', failed:'失败', stopped:'已停止'};
+const STATUS = {
+  up:'已连通', starting:'连接中', syncing:'正在同步节点', vpn_up:'VPN 已连接',
+  sync_failed:'节点同步失败', failed:'失败', stopped:'已停止'
+};
 
 function renderExits(){
   const list = $('#list');

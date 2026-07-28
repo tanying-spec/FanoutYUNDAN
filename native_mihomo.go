@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -55,6 +56,21 @@ func (m *mihomoBackend) templates() ([]MihomoTemplate, error) {
 	for _, raw := range listeners {
 		l, ok := raw.(map[string]any)
 		if !ok || strings.ToLower(fmt.Sprint(l["type"])) != "vless" {
+			continue
+		}
+		// FanoutYUNDAN currently writes users into an existing listener. Only
+		// expose transports whose client link can be reconstructed completely.
+		// Silently treating Reality, gRPC or HTTPUpgrade as plain TCP creates a
+		// plausible-looking but unusable link.
+		unsupportedKeys := []string{"reality-config", "grpc-service-name", "http-upgrade-path", "xhttp-path", "certificate", "private-key"}
+		unsupported := false
+		for _, key := range unsupportedKeys {
+			if value := strings.TrimSpace(fmt.Sprint(l[key])); value != "" && value != "<nil>" {
+				unsupported = true
+				break
+			}
+		}
+		if unsupported {
 			continue
 		}
 		network, path := "tcp", ""
@@ -110,6 +126,10 @@ func (m *mihomoBackend) apply(inbounds []*nativeInbound, tunnels []*Tunnel) erro
 	if bytes.Equal(original, updated) {
 		return nil
 	}
+	originalInfo, err := os.Stat(m.configPath)
+	if err != nil {
+		return fmt.Errorf("读取 Mihomo 配置权限失败: %w", err)
+	}
 
 	dir := filepath.Dir(m.configPath)
 	tmp, err := os.CreateTemp(dir, ".fanout-yundan-*.yaml")
@@ -139,16 +159,55 @@ func (m *mihomoBackend) apply(inbounds []*nativeInbound, tunnels []*Tunnel) erro
 	if err := os.Rename(tmpPath, m.configPath); err != nil {
 		return fmt.Errorf("替换 Mihomo 配置失败: %w", err)
 	}
-	if err := restartMihomo(); err == nil {
+	if err := preserveFileMetadata(m.configPath, originalInfo); err != nil {
+		_ = restoreConfigFile(m.configPath, original, originalInfo)
+		return fmt.Errorf("恢复 Mihomo 配置权限失败: %w", err)
+	}
+	restartErr := restartMihomo()
+	if restartErr == nil {
 		return nil
 	}
 
-	_ = os.WriteFile(m.configPath, original, 0600)
+	if err := restoreConfigFile(m.configPath, original, originalInfo); err != nil {
+		return fmt.Errorf("Mihomo 重启失败 (%v)，且恢复原配置失败: %w", restartErr, err)
+	}
 	rollbackErr := restartMihomo()
 	if rollbackErr != nil {
-		return fmt.Errorf("Mihomo 重启失败，且自动回滚后仍无法启动: %v", rollbackErr)
+		return fmt.Errorf("Mihomo 重启失败 (%v)，且自动回滚后仍无法启动: %v", restartErr, rollbackErr)
 	}
 	return fmt.Errorf("Mihomo 重启失败，已恢复原配置")
+}
+
+func preserveFileMetadata(path string, info os.FileInfo) error {
+	if err := os.Chmod(path, info.Mode().Perm()); err != nil {
+		return err
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return os.Chown(path, int(stat.Uid), int(stat.Gid))
+	}
+	return nil
+}
+
+func restoreConfigFile(path string, content []byte, info os.FileInfo) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".fanout-yundan-rollback-*.yaml")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err = tmp.Write(content); err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err := preserveFileMetadata(tmpPath, info); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel) ([]byte, error) {
@@ -159,8 +218,9 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 
 	live := map[string]*Tunnel{}
 	for _, t := range tunnels {
-		if t.Status == "up" {
-			live[sanitizeTag(t.Node.HostName)] = t
+		snap := t.snapshot()
+		if tunnelRoutable(snap.Status) {
+			live[sanitizeTag(snap.Node.HostName)] = t
 		}
 	}
 	managedUsers := map[string]bool{}
@@ -231,7 +291,7 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 		cleanProxies = append(cleanProxies, p)
 	}
 	for key, t := range live {
-		cleanProxies = append(cleanProxies, map[string]any{"name": mihomoManagedPrefix + key, "type": "socks5", "server": "127.0.0.1", "port": t.Port, "udp": false})
+		cleanProxies = append(cleanProxies, map[string]any{"name": mihomoManagedPrefix + key, "type": "socks5", "server": "127.0.0.1", "port": t.snapshot().Port, "udp": false})
 	}
 	cfg["proxies"] = cleanProxies
 
@@ -264,15 +324,9 @@ func mergeMihomoConfig(blob []byte, inbounds []*nativeInbound, tunnels []*Tunnel
 			managed = append(managed, fmt.Sprintf("IN-USER,%s,%s%s", ib.clientUsername(i, c), mihomoManagedPrefix, ib.BoundTo))
 		}
 	}
-	// 保留用户原有规则优先级，只在 MATCH 等兜底规则之前插入托管规则。
-	insertAt := len(cleanRules)
-	for i, r := range cleanRules {
-		text := strings.TrimSpace(fmt.Sprint(r))
-		if strings.HasPrefix(text, "MATCH,") || text == "MATCH" {
-			insertAt = i
-			break
-		}
-	}
+	// Per-user bindings are the product contract: a broad DOMAIN/IP rule must
+	// not steal a managed inbound before it reaches its selected VPN exit.
+	insertAt := 0
 	mergedRules := make([]any, 0, len(cleanRules)+len(managed))
 	mergedRules = append(mergedRules, cleanRules[:insertAt]...)
 	mergedRules = append(mergedRules, managed...)

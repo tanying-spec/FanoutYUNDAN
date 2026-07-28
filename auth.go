@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +21,12 @@ type Auth struct {
 	password string
 	mu       sync.RWMutex
 	sessions map[string]time.Time
+	attempts map[string]loginAttempt
+}
+
+type loginAttempt struct {
+	Failures int
+	ResetAt  time.Time
 }
 
 const sessionTTL = 12 * time.Hour
@@ -47,6 +54,7 @@ func NewAuth(dir string) (*Auth, bool, error) {
 	return &Auth{
 		password: strings.TrimSpace(string(blob)),
 		sessions: map[string]time.Time{},
+		attempts: map[string]loginAttempt{},
 	}, created, nil
 }
 
@@ -118,10 +126,47 @@ func (a *Auth) handleLogin(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(loginHTML))
 		return
 	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if host == "" {
+		host = r.RemoteAddr
+	}
+	now := time.Now()
+	a.mu.Lock()
+	for ip, old := range a.attempts {
+		if now.After(old.ResetAt) {
+			delete(a.attempts, ip)
+		}
+	}
+	if len(a.attempts) > 4096 {
+		for ip := range a.attempts {
+			delete(a.attempts, ip)
+			break
+		}
+	}
+	attempt := a.attempts[host]
+	if now.After(attempt.ResetAt) {
+		attempt = loginAttempt{ResetAt: now.Add(5 * time.Minute)}
+	}
+	blocked := attempt.Failures >= 5
+	a.attempts[host] = attempt
+	a.mu.Unlock()
+	if blocked {
+		w.Header().Set("Retry-After", "300")
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "尝试次数过多，请稍后再试"})
+		return
+	}
 	if !a.check(r.FormValue("password")) {
+		a.mu.Lock()
+		attempt := a.attempts[host]
+		attempt.Failures++
+		a.attempts[host] = attempt
+		a.mu.Unlock()
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "口令不对"})
 		return
 	}
+	a.mu.Lock()
+	delete(a.attempts, host)
+	a.mu.Unlock()
 	tok, err := a.issue()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
