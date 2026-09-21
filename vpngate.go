@@ -68,6 +68,10 @@ func parseNodeCSV(body string) ([]Node, error) {
 
 	r := csv.NewReader(strings.NewReader(strings.Join(kept, "\n")))
 	r.FieldsPerRecord = -1
+	// VPN Gate 的公开 feed 偶尔会在字段中返回未转义的双引号。
+	// LazyQuotes 允许读取这类脏行；下面仍会校验关键字段和 Base64，
+	// 避免把错位记录当成有效节点。
+	r.LazyQuotes = true
 	records, err := r.ReadAll()
 	if err != nil {
 		return nil, fmt.Errorf("解析节点 CSV 失败: %w", err)
